@@ -22,7 +22,7 @@ public class CameraControl: MonoBehaviour
     }
     private void init()
     {
-        CameraParent = GameObject.Find("CameraManager");
+        CameraParent = GameObject.Find("CameraParent");
 
         defaultPosition = Camera.main.transform.position;
         defaultRotation = CameraParent.transform.rotation;

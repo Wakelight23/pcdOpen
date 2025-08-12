@@ -244,7 +244,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &705507994
 Light:
   m_ObjectHideFlags: 0
@@ -431,13 +431,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.5540323, y: -0.1484525, z: 0.21201216, w: 0.7912401}
-  m_LocalPosition: {x: -0.00000023841858, y: 4.6984625, z: 3.2898989}
+  m_LocalRotation: {x: -0.41704994, y: 0.41855758, z: -0.57149684, w: 0.5694474}
+  m_LocalPosition: {x: 404.72937, y: 338.99097, z: 0.16381836}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1845635639}
-  m_LocalEulerAnglesHint: {x: 20, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 90, y: 0, z: 0}
 --- !u!114 &963194230
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -513,8 +513,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   pointMaterial: {fileID: 2100000, guid: 7b3113f3b32e90b439325f503223cf8b, type: 2}
   pointSize: 0.02
-  useColors: 0
-  pointCount: 921600
+  useColors: 1
+  pointCount: 19802850
 --- !u!4 &1387379847
 Transform:
   m_ObjectHideFlags: 0
@@ -716,7 +716,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1845635639}
-  - component: {fileID: 1845635640}
   m_Layer: 0
   m_Name: CameraManager
   m_TagString: Untagged
@@ -732,44 +731,14 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1845635637}
   serializedVersion: 2
-  m_LocalRotation: {x: -0.7071068, y: 0, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: 14.09539, y: 32.337593, z: 19.71546}
+  m_LocalRotation: {x: 0.7071068, y: 0, z: 0, w: 0.7071068}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 963194228}
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1845635640
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1845635637}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: fccccb14e5a17df42b970c10446a6ecc, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  target: {fileID: 963194228}
-  fallbackTarget: {x: 0, y: 0, z: 0}
-  orbitSpeed: 180
-  minPitch: -89
-  maxPitch: 89
-  panSpeed: 1
-  distance: 5.7357635
-  minDistance: 0.1
-  maxDistance: 1000
-  zoomSpeed: 2
-  zoomIsScaleByDistance: 1
-  smooth: 1
-  orbitDamp: 12
-  panDamp: 12
-  zoomDamp: 12
-  orbitMouseButton: 0
-  panMouseButton: 1
-  resetKey: 114
+  m_LocalEulerAnglesHint: {x: 90, y: 0, z: 0}
 --- !u!1 &1964482603
 GameObject:
   m_ObjectHideFlags: 0
