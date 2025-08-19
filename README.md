@@ -20,9 +20,5 @@ PCD를 확인하기 위해서는 .pcd 확장자의 파일이 필요합니다.
 3. 메뉴(Context Menu) 중 맨 아래에 있는 ‘Load PCD (Editor)’를 선택합니다
 4. 로컬에서 화면에 표시하길 원하는 파일을 찾아 선택 후 불러옵니다.
 
-### Build
-1. pcdOpen.exe를 실행합니다.
-2. 'Select .pcd File'을 선택하고 로드할 .pcd 확장자 파일을 선택합니다.
-
 ### Notice
 - 2GB 이상 파일은 불러올 수 없습니다.
