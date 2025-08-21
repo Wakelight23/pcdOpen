@@ -5,20 +5,22 @@ using UnityEngine;
 using System;
 using System.Threading.Tasks;
 
-// SFB 사용 시
-#if UNITY_STANDALONE_WIN
-using SFB; // StandaloneFileBrowser 네임스페이스
+// SFB 사용 시(Windows/Mac 스탠드얼론용 네이티브 파일 다이얼로그)
+#if UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX
+using SFB;
 #endif
 
+[DefaultExecutionOrder(-20)]
 public class PcdEntry : MonoBehaviour
 {
-    [Header("Choose render path")]
-    public bool useGpuRenderer = true;
+    [Header("Choose render/streaming path")]
+    public bool useStreamingController = true; // true면 PcdStreamingController 사용, false면 단발 PcdLoader + PcdGpuRenderer
 
     [Header("Targets")]
-    public PcdViewer particleViewer;      // ParticleSystem 경로(옵션)
-    public PcdGpuRenderer gpuRenderer;    // GPU 경로
-    public Material gpuPointMaterial;     // Custom/PcdPoint 기반 머티리얼
+    public PcdGpuRenderer gpuRenderer;          // GPU 경로
+    public Material gpuPointMaterial;           // Custom/PcdPoint 기반 머티리얼
+    public Camera targetCamera;                 // 없으면 Camera.main 사용
+    public Transform worldTransform;            // 포인트 좌표의 로컬->월드 변환 기준(없으면 this.transform)
 
     [Header("Visibility helpers")]
     [Tooltip("업로드 전에 모든 포인트에서 Center를 빼서 원점 기준으로 정규화합니다.")]
@@ -27,19 +29,53 @@ public class PcdEntry : MonoBehaviour
     [Tooltip("로드 직후 카메라를 데이터 중심으로 강제 포커싱합니다.")]
     public bool forceCameraFocus = true;
 
+    [Header("Streaming options")]
+    [Tooltip("스트리밍 스케줄러 포인트 예산")]
+    public int pointBudget = 5_000_000;
+    [Tooltip("화면 에러 타깃(작을수록 더 높은 LOD 유도)")]
+    public float screenErrorTarget = 2.0f;
+    public int maxLoadsPerFrame = 2;
+    public int maxUnloadsPerFrame = 4;
+    [Tooltip("루트 초기 샘플 개수(스트리밍 모드)")]
+    public int rootSampleCount = 200_000;
+    [Tooltip("옥트리 최대 깊이(스트리밍 모드)")]
+    public int octreeMaxDepth = 8;
+    [Tooltip("최소/최대 포인트(노드 분할 기준)")]
+    public int minPointsPerNode = 4096;
+    public int maxPointsPerNode = 200_000;
+
     [Header("Runtime options")]
-    [Tooltip("GPU 업로드 후 CPU 배열 해제")]
+    [Tooltip("GPU 업로드 후 CPU 배열 해제(단발 로더 경로)")]
     public bool releaseCpuArraysAfterUpload = true;
 
-    // 내부 상태: 간단 메인스레드 디스패처/코루틴 스타터
+    // 내부 상태
+    PcdStreamingController _controller; // 스트리밍 모드에서 사용
+    string _lastPath;
+
+    // ===== 간단 메인스레드 디스패처 =====
     static PcdEntry s_dispatcherOwner;
     static readonly System.Collections.Concurrent.ConcurrentQueue<Action> s_mainQueue = new();
 
+    public static event Action<float, string> OnProgress;
+
     void Awake()
     {
-        // 최초 인스턴스를 디스패처 소유자로 사용
         if (s_dispatcherOwner == null) s_dispatcherOwner = this;
+
+        // 타겟 카메라 기본값
+        if (targetCamera == null) targetCamera = Camera.main;
+        if (worldTransform == null) worldTransform = transform;
+
+        // GPU 렌더러 기본 생성
+        if (gpuRenderer == null)
+        {
+            gpuRenderer = GetComponent<PcdGpuRenderer>();
+            if (gpuRenderer == null) gpuRenderer = gameObject.AddComponent<PcdGpuRenderer>();
+        }
+        if (gpuRenderer.pointMaterial == null && gpuPointMaterial != null)
+            gpuRenderer.pointMaterial = gpuPointMaterial;
     }
+
     void Update()
     {
         while (s_mainQueue.TryDequeue(out var act))
@@ -47,9 +83,27 @@ public class PcdEntry : MonoBehaviour
             try { act?.Invoke(); }
             catch (Exception e) { Debug.LogException(e); }
         }
+
+        // 스트리밍 컨트롤러가 있다면, 매 프레임 카메라/옵션 갱신(인스펙터에서 실시간 조정 반영)
+        if (_controller != null)
+        {
+            if (_controller != null)
+            {
+                _controller.useColors = (gpuRenderer != null) ? gpuRenderer.useColors : true;
+                _controller.normalizeToOrigin = normalizeToOrigin;
+
+                _controller.targetCamera = targetCamera != null ? targetCamera : Camera.main;
+                _controller.worldTransform = worldTransform != null ? worldTransform : transform;
+
+                _controller.pointBudget = pointBudget;
+                _controller.screenErrorTarget = screenErrorTarget;
+                _controller.maxLoadsPerFrame = maxLoadsPerFrame;
+                _controller.maxUnloadsPerFrame = maxUnloadsPerFrame;
+            }
+        }
     }
 
-    static void PostToMainThread(Action a) => s_mainQueue.Enqueue(a);
+    public static void PostToMainThread(Action a) => s_mainQueue.Enqueue(a);
 
 #if UNITY_EDITOR
     [ContextMenu("Load PCD (Editor)")]
@@ -57,82 +111,13 @@ public class PcdEntry : MonoBehaviour
     {
         string path = EditorUtility.OpenFilePanel("Select PCD", "", "pcd");
         if (string.IsNullOrEmpty(path)) return;
-
-        try
-        {
-            // 이전 리소스 정리
-            CleanupPrevious();
-
-            var data = PcdLoader.LoadFromFile(path);
-            if (data == null || data.positions == null || data.pointCount <= 0)
-            {
-                Debug.LogError("Invalid or empty PCD.");
-                return;
-            }
-
-            Debug.Log($"[PCD] AABB min={data.boundsMin} max={data.boundsMax} center={data.Center} size={data.Size} count={data.pointCount}");
-
-            if (normalizeToOrigin)
-            {
-                var c = data.Center;
-                for (int i = 0; i < data.pointCount; i++)
-                    data.positions[i] -= c;
-
-                data.boundsMin -= c;
-                data.boundsMax -= c;
-            }
-
-            if (useGpuRenderer)
-            {
-                if (gpuRenderer == null)
-                    gpuRenderer = GetComponent<PcdGpuRenderer>();
-                if (gpuRenderer == null)
-                    gpuRenderer = gameObject.AddComponent<PcdGpuRenderer>();
-
-                if (gpuRenderer.pointMaterial == null && gpuPointMaterial != null)
-                    gpuRenderer.pointMaterial = gpuPointMaterial;
-
-                gpuRenderer.useColors = data.colors != null && data.colors.Length == data.pointCount;
-                gpuRenderer.pointSize = 0.02f;
-
-                gpuRenderer.UploadData(data.positions, data.colors);
-            }
-            else
-            {
-                if (particleViewer == null)
-                    particleViewer = GetComponent<PcdViewer>();
-                if (particleViewer == null)
-                    particleViewer = gameObject.AddComponent<PcdViewer>();
-
-                particleViewer.pointSize = 0.02f;
-                particleViewer.useColors = data.colors != null && data.colors.Length == data.pointCount;
-                particleViewer.LoadAndShow(path);
-            }
-
-            // 카메라 강제 포커스
-            if (forceCameraFocus)
-            {
-                FocusMainCamera(
-                    normalizeToOrigin ? Vector3.zero : data.Center,
-                    data.Size
-                );
-            }
-
-            Debug.Log($"PCD loaded: {data.pointCount} points");
-        }
-        catch (Exception e)
-        {
-            Debug.LogError(e);
-        }
+        _ = InitializeWithPathAsync(path);
     }
 #endif
 
-    // ===== 런타임 통합 진입점 =====
-
-    // 1) 버튼 OnClick에 직접 연결할 수 있는 메서드
+    // ====== UI 버튼(OnClick)에서 호출 ======
     public void OpenFileAndLoadRuntime()
     {
-        // UI 스레드에서 시작 → 내부에서 비동기 진행
         _ = OpenAndLoadRoutine();
     }
 
@@ -142,8 +127,7 @@ public class PcdEntry : MonoBehaviour
         {
             string path = await PickPcdPathAsync();
             if (string.IsNullOrEmpty(path)) return;
-
-            await LoadPcdRuntimeAsync(path);
+            await InitializeWithPathAsync(path);
         }
         catch (Exception ex)
         {
@@ -151,13 +135,11 @@ public class PcdEntry : MonoBehaviour
         }
     }
 
-    // 2) 파일 선택 (SFB 권장)
     async Task<string> PickPcdPathAsync()
     {
         string result = null;
 
-#if UNITY_STANDALONE_WIN
-        // 파일 다이얼로그는 메인스레드에서 바로 호출
+#if UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX
         try
         {
             var filters = new[] { new ExtensionFilter("PCD files", "pcd") };
@@ -170,107 +152,184 @@ public class PcdEntry : MonoBehaviour
             Debug.LogError($"File dialog error: {e.Message}");
         }
 #else
-        Debug.LogWarning("File picker is only implemented for Windows Standalone in this sample.");
+        Debug.LogWarning("File picker is only implemented for Windows/OSX Standalone in this sample.");
 #endif
-        await Task.Yield(); // 형식상 await 유지
+        await Task.Yield();
         return result;
     }
 
-    // 3) 로드/적용 통합
-    public async Task LoadPcdRuntimeAsync(string path)
+    // ====== 메인 진입: 경로를 받아 초기화 ======
+    public async Task InitializeWithPathAsync(string path)
     {
-        if (string.IsNullOrEmpty(path)) return;
+        _lastPath = path;
 
-        // 이전 리소스 정리(메인스레드)
+        // 기존 리소스 정리
         CleanupPrevious();
 
-        // 백그라운드 로딩
-        PcdData data = null;
-        Exception loadErr = null;
-        await Task.Run(() =>
+        if (useStreamingController)
         {
-            try
-            {
-                data = PcdLoader.LoadFromFile(path);
-            }
-            catch (Exception e)
-            {
-                loadErr = e;
-            }
-        }).ConfigureAwait(false);
 
-        if (loadErr != null) throw loadErr;
-        if (data == null || data.positions == null || data.pointCount <= 0)
-            throw new Exception("Invalid or empty PCD.");
-
-        await RunOnMainThreadAsync(() =>
+            await InitializeStreamingAsync(path);
+        }
+        else
         {
+            await InitializeSingleLoadAsync(path);
+        }
+
+        if (forceCameraFocus)
+        {
+            // 간단 포커스: 렌더러의 총합 바운즈가 없으니, 스트리밍 컨트롤러 또는 단발 데이터로 포커스
+            FocusCameraHeuristics();
+        }
+
+        Debug.Log($"[PcdEntry] Initialized: streaming={useStreamingController}, path={path}");
+    }
+
+    // ====== 스트리밍 컨트롤러 경로 ======
+    async Task InitializeStreamingAsync(string path)
+    {
+        // 컨트롤러 준비
+        Report(0.05f, "Prepare components");
+        _controller = GetComponent<PcdStreamingController>();
+        if (_controller == null) _controller = gameObject.AddComponent<PcdStreamingController>();
+
+        // 컨트롤러 파라미터 주입
+        _controller.pcdPath = path;
+        _controller.useColors = (gpuRenderer != null) ? gpuRenderer.useColors : true;
+        _controller.normalizeToOrigin = normalizeToOrigin;
+
+        _controller.octreeMaxDepth = octreeMaxDepth;
+        _controller.minPointsPerNode = minPointsPerNode;
+        _controller.maxPointsPerNode = maxPointsPerNode;
+        _controller.rootSampleCount = rootSampleCount;
+
+        _controller.pointBudget = pointBudget;
+        _controller.screenErrorTarget = screenErrorTarget;
+        _controller.maxLoadsPerFrame = maxLoadsPerFrame;
+        _controller.maxUnloadsPerFrame = maxUnloadsPerFrame;
+
+        _controller.targetCamera = targetCamera != null ? targetCamera : Camera.main;
+        _controller.worldTransform = worldTransform != null ? worldTransform : transform;
+
+        _controller.gpuRenderer = gpuRenderer;
+        if (_controller.gpuRenderer != null && _controller.gpuRenderer.pointMaterial == null && gpuPointMaterial != null)
+            _controller.gpuRenderer.pointMaterial = gpuPointMaterial;
+
+        Report(0.1f, "Start streaming init");
+        await _controller.InitializeAsync(path);
+        Report(0.95f, "Finalize");
+    }
+
+    // ====== 단발 로더 + GPU 업로드 경로 ======
+    async Task InitializeSingleLoadAsync(string path)
+    {
+        try
+        {
+            // 백그라운드 스레드에서 로드
+            PcdData data = null;
+            Exception loadErr = null;
+            await Task.Run(() =>
+            {
+                try
+                {
+                    data = PcdLoader.LoadFromFile(path);
+                }
+                catch (Exception e)
+                {
+                    loadErr = e;
+                }
+            }).ConfigureAwait(false);
+
+            if (loadErr != null) throw loadErr;
+            if (data == null || data.positions == null || data.pointCount <= 0)
+                throw new Exception("Invalid or empty PCD.");
+
             // 정규화
             if (normalizeToOrigin)
             {
-                var c = data.Center;
+                var c = (data.boundsMin + data.boundsMax) * 0.5f;
                 for (int i = 0; i < data.pointCount; i++) data.positions[i] -= c;
                 data.boundsMin -= c; data.boundsMax -= c;
             }
 
-            // GPU/Particle 적용 (ComputeBuffer 포함)
-            if (useGpuRenderer)
+            // GPU 업로드(메인 스레드)
+            await RunOnMainThreadAsync(() =>
             {
-                if (gpuRenderer == null) gpuRenderer = GetComponent<PcdGpuRenderer>();
-                if (gpuRenderer == null) gpuRenderer = gameObject.AddComponent<PcdGpuRenderer>();
+                if (gpuRenderer == null)
+                {
+                    gpuRenderer = GetComponent<PcdGpuRenderer>();
+                    if (gpuRenderer == null) gpuRenderer = gameObject.AddComponent<PcdGpuRenderer>();
+                }
                 if (gpuRenderer.pointMaterial == null && gpuPointMaterial != null)
                     gpuRenderer.pointMaterial = gpuPointMaterial;
 
-                gpuRenderer.useColors = data.colors != null && data.colors.Length == data.pointCount;
+                gpuRenderer.useColors = (data.colors != null && data.colors.Length == data.pointCount);
                 gpuRenderer.pointSize = 0.02f;
-                gpuRenderer.UploadData(data.positions, data.colors);
-            }
-            else
+                gpuRenderer.ClearAllNodes(); // 단일 노드를 1개로 취급
+                gpuRenderer.AddOrUpdateNode(0, data.positions, data.colors, new Bounds((data.boundsMin + data.boundsMax) * 0.5f, data.boundsMax - data.boundsMin));
+            });
+
+            if (releaseCpuArraysAfterUpload)
             {
-                if (particleViewer == null) particleViewer = GetComponent<PcdViewer>();
-                if (particleViewer == null) particleViewer = gameObject.AddComponent<PcdViewer>();
-                particleViewer.pointSize = 0.02f;
-                particleViewer.useColors = data.colors != null && data.colors.Length == data.pointCount;
-                particleViewer.LoadAndShow(path);
+                data.positions = null; data.colors = null; data.intensity = null;
             }
-
-            if (forceCameraFocus)
-                FocusMainCamera(normalizeToOrigin ? Vector3.zero : data.Center, data.Size);
-
-            var orbit = FindAnyObjectByType<PcdViewerOrbitControllerRaycast>();
-            if (orbit != null)
-            {
-                orbit.boundsCenter = normalizeToOrigin ? Vector3.zero : data.Center;
-                orbit.boundsSize = data.Size;
-            }
-        }).ConfigureAwait(false);
-
-        // 3) CPU 배열 해제는 어디서든 가능하지만, 안전하게 메인 람다 안/밖 모두 OK
-        if (releaseCpuArraysAfterUpload && useGpuRenderer)
+        }
+        catch (Exception e)
         {
-            data.positions = null; data.colors = null; data.intensity = null;
+            Debug.LogError(e);
         }
     }
 
-    // ===== 기존 보조 메서드/카메라 유틸 =====
-
-    void CleanupPrevious()
+    // ====== 카메라 포커스 ======
+    void FocusCameraHeuristics()
     {
-        // GPU 렌더러 정리
+        var cam = targetCamera != null ? targetCamera : Camera.main;
+        if (cam == null) return;
+
+        // 스트리밍 모드면, 대략 현재 GPU 렌더러의 노드들을 합친 바운즈가 없으므로, 간단히 엔트리 Transform 원점 근방으로 세팅
+        // 단발 로드의 경우엔 AddOrUpdateNode에서 준 노드 바운즈를 그대로 사용했으니 이미 그릴 수 있음.
+        // 여기서는 통일적으로 엔트리 기준 Bounds를 추정해서 포커스하자.
+
+        // 간단 근사: 렌더러 총 포인트 수가 있으면 카메라 거리를 적절히 당김
+        float dist = 5f;
         if (gpuRenderer != null)
         {
-            gpuRenderer.DisposeRenderer();
+            // 대략 포인트 수가 많을수록 더 멀리서 보이도록
+            var count = Mathf.Max(1, gpuRenderer.totalPointCount);
+            dist = Mathf.Clamp(Mathf.Log10(count) * 0.5f + 3f, 3f, 100f);
         }
 
-        // 파티클 뷰어 정리(구현부에 Clear가 있다면 호출)
-        if (particleViewer != null)
+        var center = worldTransform != null ? worldTransform.position : transform.position;
+        cam.transform.LookAt(center);
+        cam.transform.position = center - cam.transform.forward * dist;
+
+        cam.nearClipPlane = 0.01f;
+        cam.farClipPlane = Mathf.Max(100000f, dist * 100f);
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0.05f, 0.05f, 0.05f, 1f);
+
+        Debug.Log($"[PcdEntry] Camera focused. pos={cam.transform.position}, lookAt={center}, near={cam.nearClipPlane}, far={cam.farClipPlane}, dist={dist:0.###}");
+    }
+
+    // ====== 리소스 정리 ======
+    void CleanupPrevious()
+    {
+        // 스트리밍 컨트롤러 정리(노드/GPU 버퍼 모두 제거)
+        if (_controller != null)
         {
             try
             {
-                var method = particleViewer.GetType().GetMethod("Clear", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                method?.Invoke(particleViewer, null);
+                if (gpuRenderer != null) gpuRenderer.ClearAllNodes();
+                // 컨트롤러 컴포넌트는 유지(재사용), 필요시 제거 원하면 Destroy로 교체
             }
-            catch { /* optional */ }
+            catch { /* ignore */ }
+        }
+
+        // GPU 렌더러 정리
+        if (gpuRenderer != null)
+        {
+            try { gpuRenderer.ClearAllNodes(); }
+            catch { /* ignore */ }
         }
 
 #if UNITY_EDITOR
@@ -279,47 +338,36 @@ public class PcdEntry : MonoBehaviour
 #endif
     }
 
-    // 유틸: 메인 스레드에서 동기적으로 실행되도록 보장
-    static Task RunOnMainThreadAsync(Action action)
+    // ====== 메인 스레드에서 동기 실행 보장 ======
+    public static Task RunOnMainThreadAsync(Action action)
     {
         var tcs = new TaskCompletionSource<bool>();
         PostToMainThread(() =>
         {
-            try { action(); tcs.TrySetResult(true); }
+            try { action?.Invoke(); tcs.TrySetResult(true); }
             catch (Exception e) { tcs.TrySetException(e); }
         });
         return tcs.Task;
     }
 
-
-    public void FrameNow(PcdData data)
+    // ====== 디버그/유틸 ======
+#if UNITY_EDITOR
+    [ContextMenu("Reload Last Path")]
+    void ReloadLast()
     {
-        var cam = Camera.main;
-        if (cam == null || data == null || data.pointCount <= 0) return;
-
-        var center = (data.boundsMin + data.boundsMax) * 0.5f;
-        var size = (data.boundsMax - data.boundsMin);
-        CameraFocusUtil.FocusCameraOnBounds(cam, center, size, cam.fieldOfView, 1.2f);
+        if (string.IsNullOrEmpty(_lastPath))
+        {
+            Debug.LogWarning("[PcdEntry] No last path.");
+            return;
+        }
+        _ = InitializeWithPathAsync(_lastPath);
     }
+#endif
 
-    void FocusMainCamera(Vector3 center, Vector3 size)
+    #region ProgressBar Util
+    static void Report(float t, string label = null)
     {
-        var cam = Camera.main;
-        if (cam == null) return;
-
-        float maxExtent = Mathf.Max(size.x, Mathf.Max(size.y, size.z)) * 0.5f;
-        float fovRad = cam.fieldOfView * Mathf.Deg2Rad;
-        float dist = (Mathf.Max(0.001f, maxExtent) * 1.5f) / Mathf.Tan(Mathf.Max(1e-3f, fovRad * 0.5f));
-
-        cam.transform.LookAt(center);
-        cam.transform.position = center - cam.transform.forward * Mathf.Max(dist, 1f);
-
-        cam.nearClipPlane = 0.01f;
-        cam.farClipPlane = Mathf.Max(100000f, dist * 100f);
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.05f, 0.05f, 0.05f, 1f);
-        cam.cullingMask = ~0; // Everything
-
-        Debug.Log($"[Camera] pos={cam.transform.position}, lookAt={center}, near={cam.nearClipPlane}, far={cam.farClipPlane}, fov={cam.fieldOfView}, dist={dist:0.###}");
+        OnProgress?.Invoke(Mathf.Clamp01(t), label);
     }
+    #endregion
 }

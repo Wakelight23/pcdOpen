@@ -2,7 +2,7 @@ Shader "Custom/PcdPoint"
 {
     SubShader
     {
-        Tags { "Queue"="Geometry" "RenderType"="Opaque" }
+        Tags { "RenderPipeline"="UniversalPipeline" "Queue"="Geometry" "RenderType"="Opaque" }
         Pass
         {
             ZWrite On
@@ -21,7 +21,7 @@ Shader "Custom/PcdPoint"
             int _HasColor;
             float _PointSize; // 인터페이스 유지
 
-            float4x4 _LocalToWorld;
+            float4x4 _LocalToWorld;            
 
             struct appdata
             {
