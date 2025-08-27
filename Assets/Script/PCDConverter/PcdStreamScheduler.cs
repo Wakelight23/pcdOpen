@@ -284,17 +284,21 @@ public sealed class PcdStreamScheduler
         // 4) 언로드 정책: 예산 초과 또는 프러스텀 이탈/점수 낮은 노드 언로드
         int unloadsThisFrame = 0;
         var toRemove = new List<int>();
-        foreach (var id in _activeSet)
+        // 현재 활성 리스트를 해시로 만들어 O(1) 포함 체크
+        var visibleNow = new HashSet<int>(_activeList.Count);
+        for (int i = 0; i < _activeList.Count; i++)
+            visibleNow.Add(_activeList[i].NodeId);
+
+        // 스냅샷을 만들어 원본 HashSet을 열거하지 않음
+        var activeSnapshot = new List<int>(_activeSet);
+
+        for (int s = 0; s < activeSnapshot.Count; s++)
         {
-            // 활성 집합에 있지만 이번 프레임 유지하지 않은 노드는 언로드 대상으로 본다.
-            bool stillVisible = false;
-            for (int i = 0; i < _activeList.Count; i++)
-            {
-                if (_activeList[i].NodeId == id) { stillVisible = true; break; }
-            }
+            var id = activeSnapshot[s];
+
+            bool stillVisible = visibleNow.Contains(id);
             if (!stillVisible && unloadsThisFrame < MaxUnloadsPerFrame)
             {
-                // 언로드 요청
                 var node = FindNodeByIdInScoredOrRoots(id);
                 if (node != null && node.IsLoaded)
                 {

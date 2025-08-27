@@ -58,6 +58,7 @@ public class PcdEntry : MonoBehaviour
 
     public static event Action<float, string> OnProgress;
 
+
     void Awake()
     {
         if (s_dispatcherOwner == null) s_dispatcherOwner = this;
@@ -104,6 +105,8 @@ public class PcdEntry : MonoBehaviour
     }
 
     public static void PostToMainThread(Action a) => s_mainQueue.Enqueue(a);
+
+
 
 #if UNITY_EDITOR
     [ContextMenu("Load PCD (Editor)")]
@@ -314,13 +317,13 @@ public class PcdEntry : MonoBehaviour
     // ====== 리소스 정리 ======
     void CleanupPrevious()
     {
-        // 스트리밍 컨트롤러 정리(노드/GPU 버퍼 모두 제거)
+        // 스트리밍 컨트롤러의 내부 상태까지 완전 정리
         if (_controller != null)
         {
             try
             {
-                if (gpuRenderer != null) gpuRenderer.ClearAllNodes();
-                // 컨트롤러 컴포넌트는 유지(재사용), 필요시 제거 원하면 Destroy로 교체
+                // async 무시하기 싫다면 Wait/Result 대신 fire-and-forget로 스케줄하고 다음 프레임에 진행
+                _ = _controller.DisposeAsync();
             }
             catch { /* ignore */ }
         }
@@ -328,13 +331,18 @@ public class PcdEntry : MonoBehaviour
         // GPU 렌더러 정리
         if (gpuRenderer != null)
         {
-            try { gpuRenderer.ClearAllNodes(); }
+            try
+            {
+                gpuRenderer.ClearAllNodes();
+                gpuRenderer.SetDrawOrder(Array.Empty<int>());
+            }
             catch { /* ignore */ }
         }
 
 #if UNITY_EDITOR
-        Resources.UnloadUnusedAssets();
-        System.GC.Collect();
+        // 필요 시 옵션으로 제공: 강제 리소스/GC 회수
+        Resources.UnloadUnusedAssets(); // 애셋 참조 끊긴 것 정리(시간 소요될 수 있음)
+        System.GC.Collect();            // 큰 매니지드 배열 회수(빈번 호출은 지양)
 #endif
     }
 
@@ -365,7 +373,7 @@ public class PcdEntry : MonoBehaviour
 #endif
 
     #region ProgressBar Util
-    static void Report(float t, string label = null)
+    static public void Report(float t, string label = null)
     {
         OnProgress?.Invoke(Mathf.Clamp01(t), label);
     }

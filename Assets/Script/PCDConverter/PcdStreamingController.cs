@@ -1,7 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+
+public enum DrawSortMode
+{
+    FrontToBack, // 가까운 것부터 그리기 (Early-Z 유리)
+    BackToFront  // 먼 것부터 그리기 (블렌딩/투명 등에 유리)
+}
 
 [DefaultExecutionOrder(-10)]
 public sealed class PcdStreamingController : MonoBehaviour
@@ -10,6 +17,12 @@ public sealed class PcdStreamingController : MonoBehaviour
     public string pcdPath;
     public bool useColors = true;
     public bool normalizeToOrigin = true;
+
+    Vector3 _normalizeCenter;
+
+    [Header("Rendering Sort")]
+    [Tooltip("드로우 순서 정렬 모드: Early-Z 최적화에는 FrontToBack 권장")]
+    public DrawSortMode drawSortMode = DrawSortMode.FrontToBack;
 
     [Header("Octree/LOD")]
     [Tooltip("옥트리 최대 깊이")]
@@ -38,12 +51,6 @@ public sealed class PcdStreamingController : MonoBehaviour
     public int activePoints;
     public int inflightLoads;
 
-    public static event Action<float, string> OnProgress;
-    static void Report(float t, string label = null)
-    {
-        OnProgress?.Invoke(Mathf.Clamp01(t), label);
-    }
-
     // 내부 상태
     PcdLoader.Header _header;
     long _dataOffset;
@@ -52,6 +59,8 @@ public sealed class PcdStreamingController : MonoBehaviour
 
     PcdOctree _octree;
     PcdStreamScheduler _scheduler;
+    // 로드 취소    
+    CancellationTokenSource _cts;
 
     // pointId -> position 캐시(옥트리 분할에 사용되는 lightweight 포지션 접근자)
     // 과도한 메모리 사용을 피하기 위해 전체를 채우지 않고 필요한 만큼만 보유.
@@ -59,6 +68,82 @@ public sealed class PcdStreamingController : MonoBehaviour
 
     // 노드 로드 진행 추적
     readonly HashSet<int> _requestedNodes = new HashSet<int>();
+
+    // 노드 Bounds를 Nx,Ny,Nz 격자로 나눠 자식 포인트를 binning 후 셀별 평균 RGB를 구한다.
+    static Color32[] BuildVoxelAveragedColors(
+        Vector3[] parentPositions,       // 상위 LOD(대표) 포인트
+        Vector3[] childPositions,        // 자식(하위 LOD) 포인트
+        Color32[] childColors,           // 자식 색
+        Bounds nodeBounds,               // 노드 AABB
+        int3 grid)                       // 예: (8,8,8)
+    {
+        int px = Mathf.Max(1, grid.x), py = Mathf.Max(1, grid.y), pz = Mathf.Max(1, grid.z);
+        int cellCount = px * py * pz;
+
+        // 누적 버퍼
+        var sumR = new ulong[cellCount];
+        var sumG = new ulong[cellCount];
+        var sumB = new ulong[cellCount];
+        var cnt = new int[cellCount];
+
+        Vector3 min = nodeBounds.min;
+        Vector3 size = nodeBounds.size;
+        Vector3 cell = new Vector3(
+            Mathf.Max(1e-6f, size.x / px),
+            Mathf.Max(1e-6f, size.y / py),
+            Mathf.Max(1e-6f, size.z / pz)
+        );
+
+        // child 포인트를 voxel로 binning
+        for (int i = 0; i < childPositions.Length; i++)
+        {
+            Vector3 p = childPositions[i];
+            // 노드 바운즈 안으로 클램프
+            float fx = Mathf.Clamp((p.x - min.x) / size.x, 0f, 0.999999f);
+            float fy = Mathf.Clamp((p.y - min.y) / size.y, 0f, 0.999999f);
+            float fz = Mathf.Clamp((p.z - min.z) / size.z, 0f, 0.999999f);
+
+            int ix = Mathf.FloorToInt(fx * px);
+            int iy = Mathf.FloorToInt(fy * py);
+            int iz = Mathf.FloorToInt(fz * pz);
+
+            int ci = (iz * py + iy) * px + ix;
+            var c = childColors != null && i < childColors.Length ? childColors[i] : new Color32(255, 255, 255, 255);
+            sumR[ci] += c.r; sumG[ci] += c.g; sumB[ci] += c.b; cnt[ci]++;
+        }
+
+        // parent 포인트별 평균색 할당: parent도 동일 voxel로 양자화하여 그 셀 평균을 사용
+        var parentColors = new Color32[parentPositions.Length];
+        for (int p = 0; p < parentPositions.Length; p++)
+        {
+            Vector3 q = parentPositions[p];
+            float fx = Mathf.Clamp((q.x - min.x) / size.x, 0f, 0.999999f);
+            float fy = Mathf.Clamp((q.y - min.y) / size.y, 0f, 0.999999f);
+            float fz = Mathf.Clamp((q.z - min.z) / size.z, 0f, 0.999999f);
+
+            int ix = Mathf.FloorToInt(fx * px);
+            int iy = Mathf.FloorToInt(fy * py);
+            int iz = Mathf.FloorToInt(fz * pz);
+            int ci = (iz * py + iy) * px + ix;
+
+            if (ci >= 0 && ci < cellCount && cnt[ci] > 0)
+            {
+                byte r = (byte)(sumR[ci] / (ulong)cnt[ci]);
+                byte g = (byte)(sumG[ci] / (ulong)cnt[ci]);
+                byte b = (byte)(sumB[ci] / (ulong)cnt[ci]);
+                parentColors[p] = new Color32(r, g, b, 255);
+            }
+            else
+            {
+                parentColors[p] = new Color32(255, 255, 255, 255); // 폴백
+            }
+        }
+        return parentColors;
+    }
+
+    // 간단 int3 구조체(없으면 추가)
+    struct int3 { public int x, y, z; public int3(int X, int Y, int Z) { x = X; y = Y; z = Z; } }
+
 
     // 메인 스레드 확인용
     static bool IsMainThread()
@@ -78,12 +163,60 @@ public sealed class PcdStreamingController : MonoBehaviour
         await InitializeAsync(pcdPath);
     }
 
+    // 외부에서 호출: 모든 진행 작업 중단 + 메모리/상태 초기화
+    public async Task DisposeAsync()
+    {
+        try
+        {
+            _cts?.Cancel();
+        }
+        catch { }
+        finally
+        {
+            // 로딩 완료 대기: 인플라이트 작업이 Unity API를 안 건드리게
+            // 필요 시 작은 지연
+            await Task.Yield();
+        }
+
+        // 스케줄러 해제
+        if (_scheduler != null)
+        {
+            _scheduler.Clear();
+        }
+
+        // GPU 버퍼 정리
+        if (gpuRenderer != null)
+        {
+            if (PcdStreamingController.IsMainThread())
+                gpuRenderer.ClearAllNodes();
+            else
+                await RunOnMainThreadAsync(() => gpuRenderer.ClearAllNodes());
+            gpuRenderer.SetDrawOrder(Array.Empty<int>());
+        }
+
+        // 상태 컨테이너 정리
+        _requestedNodes.Clear();
+        _posCache.Clear();
+
+        _subloader = null;
+        _index = null;
+        _header = null;
+        _octree = null;
+        _scheduler = null;
+
+        _cts?.Dispose();
+        _cts = null;
+    }
+
     public async Task InitializeAsync(string path)
     {
         pcdPath = path;
 
+        await DisposeAsync(); // 재초기화 전에 항상 완전 정리
+        _cts = new CancellationTokenSource();
+
         // 1) GPU 렌더러 준비
-        Report(0.15f, "Reading header"); // 또는 PcdEntry.Report 래핑
+        PcdEntry.Report(0.15f, "Reading header"); // 또는 PcdEntry.Report 래핑
         if (gpuRenderer == null)
         {
             gpuRenderer = GetComponent<PcdGpuRenderer>();
@@ -94,7 +227,7 @@ public sealed class PcdStreamingController : MonoBehaviour
         gpuRenderer.useColors = useColors;
 
         // 2) PCD 헤더 & 인덱스 생성
-        Report(0.3f, "Building index");
+        PcdEntry.Report(0.3f, "Building index");
         await Task.Run(() =>
         {
             using var fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read, 1 << 20, System.IO.FileOptions.RandomAccess);
@@ -115,14 +248,14 @@ public sealed class PcdStreamingController : MonoBehaviour
         _subloader = new PcdSubloader(path, subIndex, useColors);
 
         // 4) 루트 샘플 선택 및 포지션 프리패스(샘플만)
-        Report(0.45f, "Sampling root points");
+        PcdEntry.Report(0.45f, "Sampling root points");
         int[] rootSampleIds = await Task.Run(() => _subloader.BuildUniformSampleIds(Mathf.Min(rootSampleCount, subIndex.Points)));
-        Report(0.5f, $"Root sample count: {rootSampleIds.Length}");
+        PcdEntry.Report(0.5f, $"Root sample count: {rootSampleIds.Length}");
         // 루트 AABB 계산을 위해 샘플의 좌표만 빠르게 로드
         var rootSampleData = await _subloader.LoadPointsAsync(rootSampleIds);
 
         // 5) 정규화(옵션)
-        Report(0.55f, "Normalizing root points");
+        PcdEntry.Report(0.55f, "Normalizing root points");
         Vector3 center = (rootSampleData.boundsMin + rootSampleData.boundsMax) * 0.5f;
         if (normalizeToOrigin)
         {
@@ -133,7 +266,7 @@ public sealed class PcdStreamingController : MonoBehaviour
         }
 
         // 6) 옥트리 생성
-        Report(0.6f, "Building octree");
+        PcdEntry.Report(0.6f, "Building octree");
         _octree = new PcdOctree();
         _octree.Configure(new PcdOctree.BuildParams
         {
@@ -160,6 +293,15 @@ public sealed class PcdStreamingController : MonoBehaviour
         }
 
         var root = _octree.BuildInitial(rootSampleIds, Getter);
+        // 6.5) 루트 LOD 컬러 밉 생성(선택)
+        // 루트는 uniform 샘플이라 child/parent 개념이 1:1일 수 있지만,
+        // 여기서는 샘플 자체를 상위 LOD로 보고, 동일 배열을 parent로 사용
+        var parentPositions = rootSampleData.positions;
+        var childPositions = rootSampleData.positions;
+        var childColors = rootSampleData.colors;
+
+        var grid = new int3(8, 8, 8); // 노드 크기/분포에 맞게 조정
+        var parentColors = BuildVoxelAveragedColors(parentPositions, childPositions, childColors, root.Bounds, grid);
 
         // 7) 루트 노드 GPU 업로드
         // 주의: 메인 스레드에서만 Unity API 호출 가능
@@ -168,19 +310,19 @@ public sealed class PcdStreamingController : MonoBehaviour
             await RunOnMainThreadAsync(() =>
             {
                 gpuRenderer.ClearAllNodes();
-                gpuRenderer.AddOrUpdateNode(root.NodeId, rootSampleData.positions, rootSampleData.colors, root.Bounds);
+                gpuRenderer.AddOrUpdateNode(root.NodeId, rootSampleData.positions, parentColors, root.Bounds);
             });
         }
         else
         {
             gpuRenderer.ClearAllNodes();
-            gpuRenderer.AddOrUpdateNode(root.NodeId, rootSampleData.positions, rootSampleData.colors, root.Bounds);
+            gpuRenderer.AddOrUpdateNode(root.NodeId, rootSampleData.positions, parentColors, root.Bounds);
         }
-        Report(0.75f, "Uploading root node to GPU");
+        PcdEntry.Report(0.75f, "Uploading root node to GPU");
         root.IsLoaded = true;
 
         // 8) 스케줄러 설정
-        Report(0.8f, "Initializing scheduler");
+        PcdEntry.Report(0.8f, "Initializing scheduler");
         _scheduler = new PcdStreamScheduler
         {
             Camera = (targetCamera != null ? targetCamera : Camera.main),
@@ -197,7 +339,9 @@ public sealed class PcdStreamingController : MonoBehaviour
         // 9) 루트 연결
         _scheduler.Clear();
         _scheduler.AddRoot(Adapt(root, null));
-        Report(1.0f, "Done");
+        PcdEntry.Report(1.0f, "Done");
+
+        _normalizeCenter = normalizeToOrigin ? center : Vector3.zero;
 
         Debug.Log("[PcdStreamingController] Initialized.");
     }
@@ -260,20 +404,78 @@ public sealed class PcdStreamingController : MonoBehaviour
             ada.Inner.IsLoaded = false;
         }
 
-        _scheduler.NotifyUnloaded(node);
+        // 스케줄러 상태 반영은 다음 프레임에 수행(열거 중 수정 방지)
+        StartCoroutine(NotifyUnloadedNextFrame(node));
     }
+
+    System.Collections.IEnumerator NotifyUnloadedNextFrame(IOctreeNode node)
+    {
+        yield return null; // 다음 프레임
+        _scheduler?.NotifyUnloaded(node);
+    }
+
+    // 카메라 거리 계산: 스케줄러가 카메라를 알고 있다고 가정
+    float ComputeCameraDistanceSqr(IOctreeNode node)
+    {
+        if (_scheduler == null || _scheduler.Camera == null) return float.MaxValue;
+
+        var camPos = _scheduler.Camera.transform.position;
+        var center = node.Bounds.center;
+        if (worldTransform != null)
+            center = worldTransform.TransformPoint(center);
+
+        return (center - camPos).sqrMagnitude;
+    }
+
 
     // 활성 노드 목록 변경 시: 렌더 순서 갱신
     void OnActiveNodesChanged(IReadOnlyList<IOctreeNode> nodes)
     {
         if (gpuRenderer == null) return;
-        // 가까운 순서로 그리면 시각적 결과가 좋을 수 있으나, 여기선 스코어 정렬 결과를 그대로 사용
-        var order = new List<int>(nodes.Count);
-        for (int i = 0; i < nodes.Count; i++) order.Add(nodes[i].NodeId);
+        if (nodes == null || nodes.Count == 0)
+        {
+            if (IsMainThread()) gpuRenderer.SetDrawOrder(null);
+            else _ = RunOnMainThreadAsync(() => gpuRenderer.SetDrawOrder(null));
+            return;
+        }
 
+        // 1) 정렬용 임시 리스트 복사
+        var sorted = new List<IOctreeNode>(nodes.Count);
+        for (int i = 0; i < nodes.Count; i++)
+            sorted.Add(nodes[i]);
+
+        // 2) 카메라 거리 기반 정렬
+        // FrontToBack: 오름차순 (가까운 것 먼저)
+        // BackToFront: 내림차순 (먼 것 먼저)
+        if (drawSortMode == DrawSortMode.FrontToBack)
+        {
+            sorted.Sort((a, b) =>
+            {
+                float da = ComputeCameraDistanceSqr(a);
+                float db = ComputeCameraDistanceSqr(b);
+                return da.CompareTo(db); // 가까운 것 먼저
+            });
+        }
+        else // BackToFront
+        {
+            sorted.Sort((a, b) =>
+            {
+                float da = ComputeCameraDistanceSqr(a);
+                float db = ComputeCameraDistanceSqr(b);
+                return db.CompareTo(da); // 먼 것 먼저
+            });
+        }
+
+        // 3) 정렬된 ID 배열로 변환
+        var order = new List<int>(sorted.Count);
+        for (int i = 0; i < sorted.Count; i++)
+            order.Add(sorted[i].NodeId);
+
+        // 4) 렌더러에 적용
         if (IsMainThread()) gpuRenderer.SetDrawOrder(order);
         else _ = RunOnMainThreadAsync(() => gpuRenderer.SetDrawOrder(order));
     }
+
 
     // ======= 노드 로드/분할/업로드 =======
 
@@ -326,40 +528,38 @@ public sealed class PcdStreamingController : MonoBehaviour
 
     async Task EnsureNodeUploadedAsync(PcdOctree.Node node)
     {
-        if (node == null) return;
-        if (node.IsLoaded) return;
+        if (node == null || node.IsLoaded) return;
 
         // 노드에 포인트가 없는 경우 스킵
         var ids = node.PointIds;
         int count = ids?.Count ?? 0;
         if (count <= 0) return;
 
-        // 2.1) 필요한 포인트만 부분 로드
+        // 필요한 포인트만 부분 로드
         var data = await _subloader.LoadPointsAsync(ids.ToArray());
+        var positions = data.positions;
+        var colors = data.colors;
 
-        // 2.2) 정규화 적용
+        // voxel binning으로 노드 내부 평균 색(상위 LOD용 대표색) 생성
+        var grid = new int3(8, 8, 8); // 필요 시 레벨별로 4/8/16 등 조정
+        var avgColors = BuildVoxelAveragedColors(positions, positions, colors, node.Bounds, grid);
+
+        // 정규화 적용
         if (normalizeToOrigin)
         {
-            // 초기 center를 저장해두지 않았다면 루트 샘플에서 계산된 center를 재사용하도록 구조화해야 하나,
-            // 여기서는 원점 기준으로 옮겨 렌더링한다고 가정(Initialize에서 rootSampleData를 이미 center로 정규화).
-            // 이후 새로 로드되는 노드도 동일 기준(원점)일 것으로 가정.
-            // 이미 _subloader는 원본 좌표를 반환하므로 여기서 center를 빼야 일관.
-            // center를 멤버로 보관해두자.
+            for (int i = 0; i < data.pointCount; i++) data.positions[i] -= _normalizeCenter;
         }
 
-        // 2.3) AABB(노드 Bounds) 갱신 필요 시
-        // 옥트리는 샘플 기반으로 Bounds가 설정되어 있으나, 더 정확한 보정을 원하면 여기서 재계산 가능.
-
-        // 2.4) GPU 업로드
+        // GPU 업로드
         await RunOnMainThreadAsync(() =>
         {
             if (gpuRenderer == null) return;
-            gpuRenderer.AddOrUpdateNode(node.NodeId, data.positions, data.colors, node.Bounds);
+            gpuRenderer.AddOrUpdateNode(node.NodeId, data.positions, avgColors, node.Bounds);
         });
 
         node.IsLoaded = true;
 
-        // 2.5) posCache 보강(분할 시 재사용)
+        // posCache 보강(분할 시 재사용)
         CachePositions(ids, data.positions);
     }
 
