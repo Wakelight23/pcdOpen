@@ -11,9 +11,10 @@ Shader "Custom/PcdBillboardIndirect"
         Tags { "RenderType"="Transparent" "Queue"="Transparent" "IgnoreProjector"="True" "RenderPipeline"="UniversalPipeline" }
         Pass
     {
-        ZWrite Off
+        ZWrite On
         ZTest LEqual
-        Blend One OneMinusSrcAlpha
+        // Blend One OneMinusSrcAlpha
+        Blend Off
 
         Name "PcdBillboardIndirect"
         HLSLPROGRAM
@@ -37,6 +38,8 @@ Shader "Custom/PcdBillboardIndirect"
         float    _SoftEdge;          // 0..1
         float    _RoundMask;         // 0/1
         int      _HasColor;          // 0/1
+        float    _LodFade; // 0..1
+        float    _DitherFade; // 0/1 toggle
 
         // Sizing params
         float    _MinPixel;          // clamp min
@@ -74,18 +77,18 @@ Shader "Custom/PcdBillboardIndirect"
         }
 
         // Build billboard quad corner from vertexID (0..5 -> 2 tris from a quad)
-        float2 QuadCorner(uint vid)
-        {
+        // float2 QuadCorner(uint vid)
+        // {
             // indices: 0,1,2, 2,1,3
-            uint quadIndex = (vid == 0) ? 0 : (vid == 1) ? 1 : (vid == 2) ? 2 : (vid == 3) ? 2 : (vid == 4) ? 1 : 3;
-            float2 corners[4] = {
-                float2(-0.5,-0.5),
-                float2( 0.5,-0.5),
-                float2(-0.5, 0.5),
-                float2( 0.5, 0.5)
-            };
-            return corners[quadIndex];
-        }
+        //     uint quadIndex = (vid == 0) ? 0 : (vid == 1) ? 1 : (vid == 2) ? 2 : (vid == 3) ? 2 : (vid == 4) ? 1 : 3;
+        //     float2 corners[4] = {
+        //         float2(-0.5,-0.5),
+        //         float2( 0.5,-0.5),
+        //         float2(-0.5, 0.5),
+        //         float2( 0.5, 0.5)
+        //     };
+        //     return corners[quadIndex];
+        // }
 
         float ComputePixelSize(float3 worldPos)
         {
@@ -119,7 +122,7 @@ Shader "Custom/PcdBillboardIndirect"
             float3 posWS = mul(_LocalToWorld, float4(posLS,1)).xyz;
 
             // Corner and desired pixel size
-            float2 corner = QuadCorner(i.vertexID);
+            float2 corner = (i.vertexID==0? float2(-0.5,-0.5) : i.vertexID==1? float2(0.5,-0.5) : i.vertexID==2? float2(-0.5,0.5) : float2(0.5,0.5)); 
             float pix = ComputePixelSize(posWS);
 
             // Convert pixel offset to clip-space offset
@@ -178,6 +181,7 @@ Shader "Custom/PcdBillboardIndirect"
         }
 
         float3 Luminance3(float3 c) { float l = dot(c, float3(0.299, 0.587, 0.114)); return float3(l,l,l); }
+        float Hash12(float2 p) { return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
 
         float4 Frag(VSOut i) : SV_Target
         {
@@ -185,8 +189,27 @@ Shader "Custom/PcdBillboardIndirect"
             float4 tex = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv);
             float4 c = i.col * tex;
 
+            /*
+            // LOD cross-fade
+            // 1) 디더 모드: 화면공간 해시로 마스크
+            if (_DitherFade > 0.5)
+            {
+                // SV_POSITION은 VSOut에 이미 posCS가 있으므로 사용
+                float2 pix = i.posCS.xy / max(i.posCS.w, 1e-6);
+                pix = (pix * 0.5 + 0.5) * _ScreenParams.xy;
+                float h = Hash12(pix);
+                // 상위 LOD가 페이드 인이면 임계값 비교 방식으로 점진 등장
+                if (h > _LodFade) discard;
+            }
+            else
+            {
+                // 2) 알파 페이드: 프리멀티 알파에서 a를 곱
+                c.a = max(c.a, 0.5);
+                c.a *= _LodFade;
+            }
+
             // 프리멀티 출력(렌더 상태: Blend One OneMinusSrcAlpha 권장)
-            c.a = 1.0;
+            // c.a = 0.5;
             c.rgb *= c.a;
 
             // 거리 정규화
@@ -199,7 +222,7 @@ Shader "Custom/PcdBillboardIndirect"
 
             // 밝기 감쇠
             c.rgb *= 1.0 / (1.0 + _ColorAtten.y * t);
-
+            */
             return c;
         }
             ENDHLSL

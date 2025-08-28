@@ -66,7 +66,7 @@ public sealed class PcdBillboardRenderSystem : MonoBehaviour
         {
             var r = _renderers[i];
             if (r == null || !r.isActiveAndEnabled) continue;
-            r.RenderIndirect(cmd, cam);
+            r.RenderSplatAccum(cmd, cam);
         }
     }
 }

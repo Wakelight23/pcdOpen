@@ -18,7 +18,6 @@ public class PcdEdlPass : ScriptableRenderPass
     PcdGpuRenderer[] _renderers;
 
     static readonly int ID_PcdColor = Shader.PropertyToID("_PcdColor");
-    static readonly int ID_PcdDepth = Shader.PropertyToID("_PcdDepth");
     static readonly int ID_Radius = Shader.PropertyToID("_EdlRadius");
     static readonly int ID_Strength = Shader.PropertyToID("_EdlStrength");
     static readonly int ID_Boost = Shader.PropertyToID("_BrightnessBoost");
@@ -44,11 +43,6 @@ public class PcdEdlPass : ScriptableRenderPass
         desc.depthBufferBits = 0;
         desc.colorFormat = _settings.edlSettings.colorFormat;
         RenderingUtils.ReAllocateIfNeeded(ref _colorRT, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: _settings.colorRTName);
-
-        var depthDesc = renderingData.cameraData.cameraTargetDescriptor;
-        depthDesc.depthBufferBits = 0;
-        depthDesc.colorFormat = _settings.edlSettings.depthFormat;
-        RenderingUtils.ReAllocateIfNeeded(ref _depthRT, depthDesc, FilterMode.Point, TextureWrapMode.Clamp, name: _settings.depthRTName);
     }
 
     public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
@@ -59,7 +53,7 @@ public class PcdEdlPass : ScriptableRenderPass
         try
         {
             // 1) 포인트 전용 RT로 렌더
-            cmd.SetRenderTarget(_colorRT, _depthRT);
+            cmd.SetRenderTarget(_colorRT);
             cmd.ClearRenderTarget(true, true, Color.clear);
 
             if (_renderers == null || _renderers.Length == 0)
@@ -69,12 +63,12 @@ public class PcdEdlPass : ScriptableRenderPass
             foreach (var r in _renderers)
             {
                 if (r == null || !r.isActiveAndEnabled) continue;
-                r.RenderIndirect(cmd, cam);
+                r.RenderSplatAccum(cmd, cam);
             }
 
             // 2) EDL 합성 → 카메라 컬러 타깃으로 블릿
             cmd.SetGlobalTexture(ID_PcdColor, _colorRT);
-            cmd.SetGlobalTexture(ID_PcdDepth, _depthRT);
+            cmd.SetGlobalTexture("_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
             cmd.SetGlobalVector(ID_ScreenPx, new Vector4(_colorRT.rt.width, _colorRT.rt.height, 0, 0));
             _edlMat.SetFloat(ID_Radius, _settings.edlSettings.edlRadius);
             _edlMat.SetFloat(ID_Strength, _settings.edlSettings.edlStrength);

@@ -6,21 +6,41 @@ public class PcdGpuRendererUI : MonoBehaviour
     [Header("Target")]
     public PcdGpuRenderer targetRenderer;
 
+    [Header("Color Mapping UI")]
+    public PcdStreamingController streamingController;
+
     [Header("Window")]
     public bool showUI = false;
     public KeyCode toggleKey = KeyCode.F1;
-    public string windowTitle = "PcdGpuRenderer Settings";
+    public string windowTitle = "PCD Renderer Settings";
     public int windowId = 732841;
-    public Rect windowRect = new Rect(20, 20, 360, 360);
+    public Rect windowRect = new Rect(20, 20, 380, 600);
     public bool lockCursorWhenHidden = false;
+
 
     // 내부 상태
     Vector2 _scroll;
+
+    // UI 입력 차단 관련
+    public static bool InputBlockedByUI { get; private set; }
+    private static PcdGpuRendererUI _activeInstance;
 
     void Awake()
     {
         if (targetRenderer == null)
             targetRenderer = GetComponent<PcdGpuRenderer>();
+
+        if (streamingController == null)
+            streamingController = GetComponent<PcdStreamingController>();
+
+        // 활성 인스턴스 등록
+        _activeInstance = this;
+    }
+
+    void OnDestroy()
+    {
+        if (_activeInstance == this)
+            _activeInstance = null;
     }
 
     void Update()
@@ -28,12 +48,30 @@ public class PcdGpuRendererUI : MonoBehaviour
         if (Input.GetKeyDown(toggleKey))
             ToggleUI();
 
+        // UI 위에 마우스가 있는지 체크
+        UpdateInputBlocking();
+
         // 포커스 잃은 뒤 마우스 락 해제 등 필요 시
         if (!showUI && lockCursorWhenHidden)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
+    }
+
+    void UpdateInputBlocking()
+    {
+        if (!showUI)
+        {
+            InputBlockedByUI = false;
+            return;
+        }
+
+        Vector3 mousePos = Input.mousePosition;
+        // Unity GUI 좌표계는 화면 좌상단이 (0,0)이므로 변환
+        Vector2 guiMousePos = new Vector2(mousePos.x, Screen.height - mousePos.y);
+
+        InputBlockedByUI = windowRect.Contains(guiMousePos);
     }
 
     public void ToggleUI()
@@ -51,14 +89,16 @@ public class PcdGpuRendererUI : MonoBehaviour
         if (!showUI) return;
 
         // 화면 해상도에 비례하여 최소 크기 보정
-        var minW = Mathf.Min(Screen.width - 40, Mathf.Max(320, (int)windowRect.width));
-        var minH = Mathf.Min(Screen.height - 40, Mathf.Max(260, (int)windowRect.height));
+        var minW = Mathf.Min(Screen.width - 40, Mathf.Max(380, (int)windowRect.width));
+        var minH = Mathf.Min(Screen.height - 40, Mathf.Max(600, (int)windowRect.height));
         windowRect.width = minW;
         windowRect.height = minH;
 
         GUI.color = Color.white;
         windowRect = GUI.Window(windowId, windowRect, DrawWindow, windowTitle);
     }
+
+    // ... 나머지 기존 코드는 동일 ...
 
     void DrawWindow(int id)
     {
@@ -84,12 +124,8 @@ public class PcdGpuRendererUI : MonoBehaviour
         GUILayout.Space(4);
         _scroll = GUILayout.BeginScrollView(_scroll);
 
-        // Render mode
-        var rm = (PcdGpuRenderer.RenderMode)EditorLikeEnumPopup("Render Mode", targetRenderer.renderMode);
-        if (rm != targetRenderer.renderMode)
-        {
-            targetRenderer.renderMode = rm;
-        }
+        // Render Settings Section
+        DrawSectionHeader("Render Settings");
 
         // Material
         var mat = EditorLikeObjectField("Point Material", targetRenderer.pointMaterial);
@@ -98,47 +134,112 @@ public class PcdGpuRendererUI : MonoBehaviour
             targetRenderer.pointMaterial = mat;
         }
 
-        // Toggles & sliders
-        bool useCol = EditorLikeToggle("Use Colors", targetRenderer.useColors);
-        if (useCol != targetRenderer.useColors) targetRenderer.useColors = useCol;
-
         float sizePx = EditorLikeSlider("Point Size (px)", targetRenderer.pointSize, 0.5f, 64f);
         if (!Mathf.Approximately(sizePx, targetRenderer.pointSize)) targetRenderer.pointSize = sizePx;
 
+        // Use Colors toggle
+        bool useCol = EditorLikeToggle("Use Colors", targetRenderer.useColors);
+        if (useCol != targetRenderer.useColors) targetRenderer.useColors = useCol;
+
+        // Soft Edge
         float soft = EditorLikeSlider("Soft Edge", targetRenderer.softEdge, 0f, 1f);
         if (!Mathf.Approximately(soft, targetRenderer.softEdge)) targetRenderer.softEdge = soft;
 
+        // Round Mask
         bool round = EditorLikeToggle("Round Mask", targetRenderer.roundMask);
         if (round != targetRenderer.roundMask) targetRenderer.roundMask = round;
 
-        bool alpha = EditorLikeToggle("Alpha Blend (on/off)",
-    targetRenderer.pointMaterial != null && targetRenderer.pointMaterial.GetFloat("_AlphaBlend") > 0.5f);
-        if (alpha != (targetRenderer.pointMaterial.GetFloat("_AlphaBlend") > 0.5f))
+        // Kernel Settings Section  
+        GUILayout.Space(8);
+        DrawSectionHeader("Kernel Settings");
+
+        // Kernel Sharpness
+        float kernelSharpness = EditorLikeSlider("Kernel Sharpness",
+            targetRenderer.kernelSharpness, 0.5f, 3f);
+        if (!Mathf.Approximately(kernelSharpness, targetRenderer.kernelSharpness))
+            targetRenderer.kernelSharpness = kernelSharpness;
+
+        // Gaussian Kernel
+        bool gaussian = EditorLikeToggle("Gaussian Kernel", targetRenderer.gaussianKernel);
+        if (gaussian != targetRenderer.gaussianKernel)
+            targetRenderer.gaussianKernel = gaussian;
+
+        // Streaming Controller Section
+        if (streamingController != null)
         {
-            targetRenderer.pointMaterial.SetFloat("_AlphaBlend", alpha ? 1f : 0f);
-            // 필요 시 렌더 큐 조정
-            targetRenderer.pointMaterial.renderQueue = alpha
-                ? (int)UnityEngine.Rendering.RenderQueue.Transparent
-                : (int)UnityEngine.Rendering.RenderQueue.Geometry;
+            GUILayout.Space(8);
+            DrawSectionHeader("Streaming Settings");
+
+            // Point Budget
+            int pointBudget = EditorLikeIntSlider("Point Budget", streamingController.pointBudget, 100_000, 10_000_000);
+            if (pointBudget != streamingController.pointBudget)
+                streamingController.pointBudget = pointBudget;
+
+            // Screen Error Target
+            float screenError = EditorLikeSlider("Screen Error Target",
+                streamingController.screenErrorTarget, 0.5f, 10f);
+            if (!Mathf.Approximately(screenError, streamingController.screenErrorTarget))
+                streamingController.screenErrorTarget = screenError;
+
+            // Max Loads Per Frame
+            int maxLoads = EditorLikeIntSlider("Max Loads/Frame",
+                streamingController.maxLoadsPerFrame, 1, 10);
+            if (maxLoads != streamingController.maxLoadsPerFrame)
+                streamingController.maxLoadsPerFrame = maxLoads;
+
+            // Max Unloads Per Frame
+            int maxUnloads = EditorLikeIntSlider("Max Unloads/Frame",
+                streamingController.maxUnloadsPerFrame, 1, 10);
+            if (maxUnloads != streamingController.maxUnloadsPerFrame)
+                streamingController.maxUnloadsPerFrame = maxUnloads;
+
+            // Color Classification Section
+            GUILayout.Space(8);
+            DrawSectionHeader("Color Classification");
+
+            // Enable Runtime Color Classification
+            bool enableColorClass = EditorLikeToggle("Enable Runtime Classification",
+                streamingController.enableRuntimeColorClassification);
+            if (enableColorClass != streamingController.enableRuntimeColorClassification)
+                streamingController.enableRuntimeColorClassification = enableColorClass;
+
+            // RuntimePointClassifier Settings
+            if (streamingController.colorClassifier != null && streamingController.enableRuntimeColorClassification)
+            {
+                var classifier = streamingController.colorClassifier;
+
+                // settings 접근이 가능한지 체크
+                if (HasSettingsProperty(classifier))
+                {
+                    DrawClassifierSettings(classifier);
+                }
+            }
         }
 
-
+        // Stats Section
         GUILayout.Space(8);
-        GUILayout.Label("Stats");
+        DrawSectionHeader("Statistics");
         GUILayout.Label($"Active Nodes: {targetRenderer.activeNodeCount}");
         GUILayout.Label($"Total Points: {targetRenderer.totalPointCount}");
 
-        GUILayout.Space(8);
-        GUILayout.Label("Actions");
-        if (GUILayout.Button("Rebuild Draw Order (keep)"))
+        if (streamingController != null)
         {
-            // 단순히 현재 order 유지 재적용(다른 시스템에서 제공됨)
+            GUILayout.Label($"Active Points: {streamingController.activePoints}");
+            GUILayout.Label($"Inflight Loads: {streamingController.inflightLoads}");
+        }
+
+        // Actions Section
+        GUILayout.Space(8);
+        DrawSectionHeader("Actions");
+        if (GUILayout.Button("Rebuild Draw Order"))
+        {
             var ids = targetRenderer.GetActiveNodeIds();
             targetRenderer.SetDrawOrder((System.Collections.Generic.IList<int>)ids);
         }
 
+        // Window Settings Section
         GUILayout.Space(8);
-        GUILayout.Label("Window");
+        DrawSectionHeader("Window Settings");
         toggleKey = (KeyCode)EditorLikeEnumPopup("Toggle Key", toggleKey);
         lockCursorWhenHidden = EditorLikeToggle("Unlock Cursor When Hidden", lockCursorWhenHidden);
 
@@ -146,6 +247,198 @@ public class PcdGpuRendererUI : MonoBehaviour
         GUILayout.EndScrollView();
 
         GUI.DragWindow(new Rect(0, 0, 10000, 22));
+    }
+
+    // Classifier가 settings 프로퍼티를 가지고 있는지 체크
+    bool HasSettingsProperty(RuntimePointClassifier classifier)
+    {
+        var type = classifier.GetType();
+        return type.GetProperty("settings") != null || type.GetField("settings") != null;
+    }
+
+    // Classifier 설정 UI 그리기
+    void DrawClassifierSettings(RuntimePointClassifier classifier)
+    {
+        try
+        {
+            // 리플렉션을 사용해 settings에 접근
+            var type = classifier.GetType();
+            var settingsField = type.GetField("settings");
+            var settingsProperty = type.GetProperty("settings");
+
+            object settings = null;
+            if (settingsField != null)
+                settings = settingsField.GetValue(classifier);
+            else if (settingsProperty != null)
+                settings = settingsProperty.GetValue(classifier);
+
+            if (settings != null)
+            {
+                GUILayout.Space(4);
+                GUILayout.Label("Classification Parameters", EditorStyles.miniBoldLabel);
+
+                // settings의 각 필드를 체크하고 UI로 표시
+                var settingsType = settings.GetType();
+
+                // Surface Threshold
+                DrawFloatField(settings, settingsType, "surfaceThreshold", "Surface Threshold", 0.01f, 0.1f);
+
+                // Normal Smooth Radius
+                DrawFloatField(settings, settingsType, "normalSmoothRadius", "Normal Smooth Radius", 0.05f, 0.5f);
+
+                // K Neighbors
+                DrawIntField(settings, settingsType, "kNeighbors", "K Neighbors", 4, 16);
+
+                GUILayout.Space(4);
+                GUILayout.Label("Color Enhancement", EditorStyles.miniBoldLabel);
+
+                // Contrast Boost
+                DrawFloatField(settings, settingsType, "contrastBoost", "Contrast Boost", 0.5f, 2f);
+
+                // Saturation Boost
+                DrawFloatField(settings, settingsType, "saturationBoost", "Saturation Boost", 0.5f, 2f);
+
+                // Enable Outlier Removal
+                DrawBoolField(settings, settingsType, "enableOutlierRemoval", "Enable Outlier Removal");
+
+                // settings를 다시 할당
+                if (settingsField != null)
+                    settingsField.SetValue(classifier, settings);
+                else if (settingsProperty != null)
+                    settingsProperty.SetValue(classifier, settings);
+            }
+
+            // Use Job System
+            DrawClassifierBoolField(classifier, "useJobSystem", "Use Job System");
+
+            GUILayout.Space(4);
+            GUILayout.Label("Color Mapping", EditorStyles.miniBoldLabel);
+
+            // Color mapping display (read-only)
+            DrawClassifierColorField(classifier, "interiorColor", "Interior Color");
+            DrawClassifierColorField(classifier, "exteriorColor", "Exterior Color");
+            DrawClassifierColorField(classifier, "boundaryColor", "Boundary Color");
+            DrawClassifierColorField(classifier, "unknownColor", "Unknown Color");
+        }
+        catch (System.Exception e)
+        {
+            GUILayout.Label($"Settings unavailable: {e.Message}");
+        }
+    }
+
+    void DrawFloatField(object settings, System.Type settingsType, string fieldName, string displayName, float min, float max)
+    {
+        try
+        {
+            var field = settingsType.GetField(fieldName);
+            if (field != null && field.FieldType == typeof(float))
+            {
+                float value = (float)field.GetValue(settings);
+                float newValue = EditorLikeSlider(displayName, value, min, max);
+                if (!Mathf.Approximately(value, newValue))
+                {
+                    field.SetValue(settings, newValue);
+                }
+            }
+        }
+        catch { }
+    }
+
+    void DrawIntField(object settings, System.Type settingsType, string fieldName, string displayName, int min, int max)
+    {
+        try
+        {
+            var field = settingsType.GetField(fieldName);
+            if (field != null && field.FieldType == typeof(int))
+            {
+                int value = (int)field.GetValue(settings);
+                int newValue = EditorLikeIntSlider(displayName, value, min, max);
+                if (value != newValue)
+                {
+                    field.SetValue(settings, newValue);
+                }
+            }
+        }
+        catch { }
+    }
+
+    void DrawBoolField(object settings, System.Type settingsType, string fieldName, string displayName)
+    {
+        try
+        {
+            var field = settingsType.GetField(fieldName);
+            if (field != null && field.FieldType == typeof(bool))
+            {
+                bool value = (bool)field.GetValue(settings);
+                bool newValue = EditorLikeToggle(displayName, value);
+                if (value != newValue)
+                {
+                    field.SetValue(settings, newValue);
+                }
+            }
+        }
+        catch { }
+    }
+
+    void DrawClassifierBoolField(RuntimePointClassifier classifier, string fieldName, string displayName)
+    {
+        try
+        {
+            var type = classifier.GetType();
+            var field = type.GetField(fieldName);
+            var property = type.GetProperty(fieldName);
+
+            if (field != null && field.FieldType == typeof(bool))
+            {
+                bool value = (bool)field.GetValue(classifier);
+                bool newValue = EditorLikeToggle(displayName, value);
+                if (value != newValue)
+                {
+                    field.SetValue(classifier, newValue);
+                }
+            }
+            else if (property != null && property.PropertyType == typeof(bool))
+            {
+                bool value = (bool)property.GetValue(classifier);
+                bool newValue = EditorLikeToggle(displayName, value);
+                if (value != newValue && property.CanWrite)
+                {
+                    property.SetValue(classifier, newValue);
+                }
+            }
+        }
+        catch { }
+    }
+
+    void DrawClassifierColorField(RuntimePointClassifier classifier, string fieldName, string displayName)
+    {
+        try
+        {
+            var type = classifier.GetType();
+            var field = type.GetField(fieldName);
+            var property = type.GetProperty(fieldName);
+
+            Color color = Color.white;
+
+            if (field != null && field.FieldType == typeof(Color))
+            {
+                color = (Color)field.GetValue(classifier);
+            }
+            else if (property != null && property.PropertyType == typeof(Color))
+            {
+                color = (Color)property.GetValue(classifier);
+            }
+
+            EditorLikeColorField(displayName, color);
+        }
+        catch { }
+    }
+
+    void DrawSectionHeader(string title)
+    {
+        GUILayout.Space(4);
+        GUILayout.Label(title, EditorStyles.boldLabel);
+        GUILayout.Space(2);
     }
 
     // ----- 경량 "Editor-like" 위젯들 (런타임에서도 동작) -----
@@ -157,8 +450,6 @@ public class PcdGpuRendererUI : MonoBehaviour
         string name = current != null ? current.name : "(None)";
         GUILayout.Label(name, GUILayout.ExpandWidth(true));
         GUILayout.EndHorizontal();
-        // 런타임에 드래그&드롭 ObjectField를 제공하려면 커스텀 구현이 필요.
-        // 여기서는 표시만 하고, 변경은 다른 수단(코드/인스펙터)을 사용.
         return current;
     }
 
@@ -182,27 +473,30 @@ public class PcdGpuRendererUI : MonoBehaviour
         return v;
     }
 
-    System.Enum EditorLikeEnumPopup(string label, System.Enum value)
+    int EditorLikeIntSlider(string label, int value, int min, int max)
     {
         GUILayout.BeginHorizontal();
         GUILayout.Label(label, GUILayout.Width(140));
-        GUILayout.Label(value.ToString(), GUILayout.ExpandWidth(true));
-        GUILayout.EndHorizontal();
-        return value; // 런타임에서는 선택 변경 위젯을 단순화(필요 시 드롭다운 직접 구현)
-    }
-
-    System.Enum EditorLikeEnumPopup(string label, PcdGpuRenderer.RenderMode value)
-    {
-        // 간단 토글(모드가 늘어날 경우 드롭다운 구현 권장)
-        GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-        if (GUILayout.Button(value.ToString(), GUILayout.Width(160)))
-        {
-            // 단일 모드이므로 토글 없음. 모드가 여러 개면 순환 변경 로직 추가
-        }
+        GUILayout.Label(value.ToString(), GUILayout.Width(80));
         GUILayout.FlexibleSpace();
         GUILayout.EndHorizontal();
-        return value;
+
+        int v = Mathf.RoundToInt(GUILayout.HorizontalSlider(value, min, max));
+        return v;
+    }
+
+    void EditorLikeColorField(string label, Color color)
+    {
+        GUILayout.BeginHorizontal();
+        GUILayout.Label(label, GUILayout.Width(140));
+
+        // 색상 표시용 작은 박스
+        var colorRect = GUILayoutUtility.GetRect(20, 16);
+        GUI.DrawTexture(colorRect, EditorGUIUtility.whiteTexture, ScaleMode.StretchToFill, true, 0, color, 0, 0);
+
+        GUILayout.Label($"({color.r:0.00}, {color.g:0.00}, {color.b:0.00})");
+        GUILayout.FlexibleSpace();
+        GUILayout.EndHorizontal();
     }
 
     System.Enum EditorLikeEnumPopup(string label, KeyCode value)
@@ -213,5 +507,30 @@ public class PcdGpuRendererUI : MonoBehaviour
         GUILayout.FlexibleSpace();
         GUILayout.EndHorizontal();
         return value;
+    }
+}
+
+// EditorStyles와 EditorGUIUtility를 런타임에서 사용하기 위한 폴백
+public static class EditorStyles
+{
+    public static GUIStyle boldLabel = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+    public static GUIStyle miniBoldLabel = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = 10 };
+}
+
+public static class EditorGUIUtility
+{
+    private static Texture2D _whiteTexture;
+    public static Texture2D whiteTexture
+    {
+        get
+        {
+            if (_whiteTexture == null)
+            {
+                _whiteTexture = new Texture2D(1, 1);
+                _whiteTexture.SetPixel(0, 0, Color.white);
+                _whiteTexture.Apply();
+            }
+            return _whiteTexture;
+        }
     }
 }

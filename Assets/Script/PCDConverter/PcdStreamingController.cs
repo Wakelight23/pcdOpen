@@ -69,81 +69,23 @@ public sealed class PcdStreamingController : MonoBehaviour
     // 노드 로드 진행 추적
     readonly HashSet<int> _requestedNodes = new HashSet<int>();
 
-    // 노드 Bounds를 Nx,Ny,Nz 격자로 나눠 자식 포인트를 binning 후 셀별 평균 RGB를 구한다.
-    static Color32[] BuildVoxelAveragedColors(
-        Vector3[] parentPositions,       // 상위 LOD(대표) 포인트
-        Vector3[] childPositions,        // 자식(하위 LOD) 포인트
-        Color32[] childColors,           // 자식 색
-        Bounds nodeBounds,               // 노드 AABB
-        int3 grid)                       // 예: (8,8,8)
-    {
-        int px = Mathf.Max(1, grid.x), py = Mathf.Max(1, grid.y), pz = Mathf.Max(1, grid.z);
-        int cellCount = px * py * pz;
-
-        // 누적 버퍼
-        var sumR = new ulong[cellCount];
-        var sumG = new ulong[cellCount];
-        var sumB = new ulong[cellCount];
-        var cnt = new int[cellCount];
-
-        Vector3 min = nodeBounds.min;
-        Vector3 size = nodeBounds.size;
-        Vector3 cell = new Vector3(
-            Mathf.Max(1e-6f, size.x / px),
-            Mathf.Max(1e-6f, size.y / py),
-            Mathf.Max(1e-6f, size.z / pz)
-        );
-
-        // child 포인트를 voxel로 binning
-        for (int i = 0; i < childPositions.Length; i++)
-        {
-            Vector3 p = childPositions[i];
-            // 노드 바운즈 안으로 클램프
-            float fx = Mathf.Clamp((p.x - min.x) / size.x, 0f, 0.999999f);
-            float fy = Mathf.Clamp((p.y - min.y) / size.y, 0f, 0.999999f);
-            float fz = Mathf.Clamp((p.z - min.z) / size.z, 0f, 0.999999f);
-
-            int ix = Mathf.FloorToInt(fx * px);
-            int iy = Mathf.FloorToInt(fy * py);
-            int iz = Mathf.FloorToInt(fz * pz);
-
-            int ci = (iz * py + iy) * px + ix;
-            var c = childColors != null && i < childColors.Length ? childColors[i] : new Color32(255, 255, 255, 255);
-            sumR[ci] += c.r; sumG[ci] += c.g; sumB[ci] += c.b; cnt[ci]++;
-        }
-
-        // parent 포인트별 평균색 할당: parent도 동일 voxel로 양자화하여 그 셀 평균을 사용
-        var parentColors = new Color32[parentPositions.Length];
-        for (int p = 0; p < parentPositions.Length; p++)
-        {
-            Vector3 q = parentPositions[p];
-            float fx = Mathf.Clamp((q.x - min.x) / size.x, 0f, 0.999999f);
-            float fy = Mathf.Clamp((q.y - min.y) / size.y, 0f, 0.999999f);
-            float fz = Mathf.Clamp((q.z - min.z) / size.z, 0f, 0.999999f);
-
-            int ix = Mathf.FloorToInt(fx * px);
-            int iy = Mathf.FloorToInt(fy * py);
-            int iz = Mathf.FloorToInt(fz * pz);
-            int ci = (iz * py + iy) * px + ix;
-
-            if (ci >= 0 && ci < cellCount && cnt[ci] > 0)
-            {
-                byte r = (byte)(sumR[ci] / (ulong)cnt[ci]);
-                byte g = (byte)(sumG[ci] / (ulong)cnt[ci]);
-                byte b = (byte)(sumB[ci] / (ulong)cnt[ci]);
-                parentColors[p] = new Color32(r, g, b, 255);
-            }
-            else
-            {
-                parentColors[p] = new Color32(255, 255, 255, 255); // 폴백
-            }
-        }
-        return parentColors;
-    }
+    [Header("Color Classification")]
+    public bool enableRuntimeColorClassification = true;
+    public RuntimePointClassifier colorClassifier;
 
     // 간단 int3 구조체(없으면 추가)
     struct int3 { public int x, y, z; public int3(int X, int Y, int Z) { x = X; y = Y; z = Z; } }
 
+    // LOD cross-fade state per node
+    sealed class LodFadeState { public float t; public float speed; public int mode; } // 0=off,1=alpha,2=dither
+    readonly Dictionary<int, LodFadeState> _fade = new(2048);
+    [SerializeField] float _fadeDuration = 0.25f; // seconds
+    [SerializeField] int _fadeMode = 2; // 1=alpha, 2=dither
+
+    void LateUpdate()
+    {
+        UpdateFade(Time.deltaTime);
+    }
 
     // 메인 스레드 확인용
     static bool IsMainThread()
@@ -301,7 +243,11 @@ public sealed class PcdStreamingController : MonoBehaviour
         var childColors = rootSampleData.colors;
 
         var grid = new int3(8, 8, 8); // 노드 크기/분포에 맞게 조정
-        var parentColors = BuildVoxelAveragedColors(parentPositions, childPositions, childColors, root.Bounds, grid);
+        // var parentColors = BuildVoxelAveragedColors(parentPositions, childPositions, childColors, root.Bounds, grid);
+
+        // InitializeAsync 내부의 루트 노드 처리 부분
+        var parentColors = enableRuntimeColorClassification && colorClassifier != null ? colorClassifier.ClassifyAndAdjustColors(parentPositions, childColors, root.Bounds) : BuildVoxelAveragedColors(parentPositions, childPositions, childColors, root.Bounds, grid);
+
 
         // 7) 루트 노드 GPU 업로드
         // 주의: 메인 스레드에서만 Unity API 호출 가능
@@ -383,6 +329,7 @@ public sealed class PcdStreamingController : MonoBehaviour
     // 스케줄러가 특정 노드를 언로드하라고 요청할 때 호출
     void OnRequestUnload(IOctreeNode node)
     {
+        BeginFadeOut(node.NodeId);
         if (node == null) return;
 
         // GPU에서 제거
@@ -406,6 +353,7 @@ public sealed class PcdStreamingController : MonoBehaviour
 
         // 스케줄러 상태 반영은 다음 프레임에 수행(열거 중 수정 방지)
         StartCoroutine(NotifyUnloadedNextFrame(node));
+
     }
 
     System.Collections.IEnumerator NotifyUnloadedNextFrame(IOctreeNode node)
@@ -468,12 +416,24 @@ public sealed class PcdStreamingController : MonoBehaviour
 
         // 3) 정렬된 ID 배열로 변환
         var order = new List<int>(sorted.Count);
+        var nodeFades = new List<(int nodeId, float fade, int mode)>(sorted.Count);
         for (int i = 0; i < sorted.Count; i++)
-            order.Add(sorted[i].NodeId);
-
-        // 4) 렌더러에 적용
-        if (IsMainThread()) gpuRenderer.SetDrawOrder(order);
-        else _ = RunOnMainThreadAsync(() => gpuRenderer.SetDrawOrder(order));
+        {
+            var n = sorted[i];
+            order.Add(n.NodeId);
+            int mode;
+            float t = GetFadeFactor(n.NodeId, out mode);
+            nodeFades.Add((n.NodeId, t, mode));
+        }
+        if (IsMainThread())
+        {
+            gpuRenderer.SetDrawOrder(order);
+            gpuRenderer.SetPerNodeLodFade(nodeFades);
+        }
+        else
+        {
+            _ = RunOnMainThreadAsync(() => { gpuRenderer.SetDrawOrder(order); gpuRenderer.SetPerNodeLodFade(nodeFades); });
+        }
     }
 
 
@@ -540,9 +500,17 @@ public sealed class PcdStreamingController : MonoBehaviour
         var positions = data.positions;
         var colors = data.colors;
 
-        // voxel binning으로 노드 내부 평균 색(상위 LOD용 대표색) 생성
-        var grid = new int3(8, 8, 8); // 필요 시 레벨별로 4/8/16 등 조정
-        var avgColors = BuildVoxelAveragedColors(positions, positions, colors, node.Bounds, grid);
+        // 런타임 색상 분류 적용
+        if (enableRuntimeColorClassification && colorClassifier != null)
+        {
+            colors = colorClassifier.ClassifyAndAdjustColors(positions, colors, node.Bounds);
+        }
+        else
+        {
+            // 기존 복셀 평균화 방식
+            var grid = new int3(8, 8, 8);
+            colors = BuildVoxelAveragedColors(positions, positions, colors, node.Bounds, grid);
+        }
 
         // 정규화 적용
         if (normalizeToOrigin)
@@ -554,13 +522,14 @@ public sealed class PcdStreamingController : MonoBehaviour
         await RunOnMainThreadAsync(() =>
         {
             if (gpuRenderer == null) return;
-            gpuRenderer.AddOrUpdateNode(node.NodeId, data.positions, avgColors, node.Bounds);
+            gpuRenderer.AddOrUpdateNode(node.NodeId, data.positions, colors, node.Bounds);
         });
 
         node.IsLoaded = true;
 
         // posCache 보강(분할 시 재사용)
         CachePositions(ids, data.positions);
+        BeginFadeIn(node.NodeId);
     }
 
     // ======= 보조: 포인트 ID -> 좌표 =======
@@ -789,4 +758,226 @@ public sealed class PcdStreamingController : MonoBehaviour
     }
 
     sealed class StreamingDispatcherHost : MonoBehaviour { }
+
+    #region LOD Fade Update
+    void UpdateFade(float dt)
+    {
+        if (_fade.Count == 0) return;
+        var keys = System.Buffers.ArrayPool<int>.Shared.Rent(_fade.Count);
+        int n = 0;
+        foreach (var kv in _fade) keys[n++] = kv.Key;
+        for (int i = 0; i < n; i++)
+        {
+            var id = keys[i];
+            var st = _fade[id];
+            st.t = Mathf.Clamp01(st.t + st.speed * dt);
+            if (st.t >= 1f) _fade.Remove(id);
+        }
+        System.Buffers.ArrayPool<int>.Shared.Return(keys);
+    }
+
+    void BeginFadeIn(int nodeId)
+    {
+        _fade[nodeId] = new LodFadeState { t = 0f, speed = 1f / Mathf.Max(1e-3f, _fadeDuration), mode = _fadeMode };
+    }
+    void BeginFadeOut(int nodeId)
+    {
+        _fade[nodeId] = new LodFadeState { t = 1f, speed = -1f / Mathf.Max(1e-3f, _fadeDuration), mode = _fadeMode };
+    }
+    float GetFadeFactor(int nodeId, out int mode)
+    {
+        if (_fade.TryGetValue(nodeId, out var st)) { mode = st.mode; return st.t; }
+        mode = 0; return 1f;
+    }
+
+    #endregion
+
+    #region Color Utils
+
+    public enum PointClassification
+    {
+        Interior = 0,   // 내부
+        Exterior = 1,   // 외부  
+        Boundary = 2,   // 경계
+        Unknown = 3     // 미분류
+    }
+
+    // 노드 Bounds를 Nx,Ny,Nz 격자로 나눠 자식 포인트를 binning 후 셀별 평균 RGB를 구한다.
+    static Color32[] BuildVoxelAveragedColors(
+     Vector3[] parentPositions,
+     Vector3[] childPositions,
+     Color32[] childColors,
+     Bounds nodeBounds,
+     int3 grid)
+    {
+        int px = Mathf.Max(1, grid.x), py = Mathf.Max(1, grid.y), pz = Mathf.Max(1, grid.z);
+        int cellCount = px * py * pz;
+
+        // 누적 버퍼(리니어 공간 누적)
+        var sumR = new double[cellCount];
+        var sumG = new double[cellCount];
+        var sumB = new double[cellCount];
+        var wsum = new double[cellCount];
+
+        // 보조: 휘도 값 수집(트림 평균용)
+        var lumaLists = new System.Collections.Generic.List<float>[cellCount];
+        for (int i = 0; i < cellCount; i++) lumaLists[i] = new System.Collections.Generic.List<float>(32);
+
+        Vector3 min = nodeBounds.min;
+        Vector3 size = nodeBounds.size;
+        Vector3 cell = new Vector3(
+            Mathf.Max(1e-6f, size.x / px),
+            Mathf.Max(1e-6f, size.y / py),
+            Mathf.Max(1e-6f, size.z / pz)
+        );
+
+        // 각 셀 중심 미리 계산
+        var cellCenters = new Vector3[cellCount];
+        int idx = 0;
+        for (int iz = 0; iz < pz; iz++)
+            for (int iy = 0; iy < py; iy++)
+                for (int ix = 0; ix < px; ix++, idx++)
+                {
+                    var cmin = new Vector3(min.x + ix * cell.x, min.y + iy * cell.y, min.z + iz * cell.z);
+                    cellCenters[idx] = cmin + 0.5f * cell;
+                }
+
+        // 자식 포인트 → 셀 binning + 거리 가중 누적
+        for (int i = 0; i < childPositions.Length; i++)
+        {
+            Vector3 p = childPositions[i];
+            // 셀 인덱스
+            float fx = Mathf.Clamp01((p.x - min.x) / Mathf.Max(1e-6f, size.x));
+            float fy = Mathf.Clamp01((p.y - min.y) / Mathf.Max(1e-6f, size.y));
+            float fz = Mathf.Clamp01((p.z - min.z) / Mathf.Max(1e-6f, size.z));
+            int ix = Mathf.Min(px - 1, Mathf.FloorToInt(fx * px));
+            int iy = Mathf.Min(py - 1, Mathf.FloorToInt(fy * py));
+            int iz = Mathf.Min(pz - 1, Mathf.FloorToInt(fz * pz));
+            int ci = (iz * py + iy) * px + ix;
+
+            // 색 존재 없을 수 있음
+            Color32 c8 = (childColors != null && i < childColors.Length) ? childColors[i] : new Color32(255, 255, 255, 255);
+
+            // sRGB → Linear
+            Vector3 cLin = new Vector3(
+                GammaToLinear01(c8.r / 255f),
+                GammaToLinear01(c8.g / 255f),
+                GammaToLinear01(c8.b / 255f)
+            );
+
+            // 거리 가중치(셀 중심 기준, 셀 대각선으로 정규화)
+            float dist = (p - cellCenters[ci]).magnitude;
+            float cellDiag = cell.magnitude + 1e-6f;
+            float w = Mathf.Clamp01(1f - (dist / cellDiag)); // 중심 가까울수록 가중↑
+
+            // 누적
+            sumR[ci] += cLin.x * w;
+            sumG[ci] += cLin.y * w;
+            sumB[ci] += cLin.z * w;
+            wsum[ci] += w;
+
+            // 휘도(리니어) 기록
+            float l = 0.299f * cLin.x + 0.587f * cLin.y + 0.114f * cLin.z;
+            lumaLists[ci].Add(l);
+        }
+
+        // 보켈별 트림 비율
+        const float trimRatio = 0.10f; // 하/상위 10% 제거
+
+        // 보켈 평균색 계산(리니어→sRGB, 트림 반영)
+        var cellColor = new Color32[cellCount];
+        for (int c = 0; c < cellCount; c++)
+        {
+            double wsumC = wsum[c];
+            Vector3 avgLin;
+
+            if (wsumC > 1e-8)
+            {
+                // 1) 초기 가중 평균(리니어)
+                avgLin = new Vector3(
+                    (float)(sumR[c] / wsumC),
+                    (float)(sumG[c] / wsumC),
+                    (float)(sumB[c] / wsumC)
+                );
+
+                // 2) 로버스트 보정: 휘도 트림
+                var L = lumaLists[c];
+                if (L.Count >= 8)
+                {
+                    L.Sort();
+                    int lo = Mathf.RoundToInt(L.Count * trimRatio);
+                    int hi = L.Count - lo;
+                    double lSum = 0; int lCnt = 0;
+                    for (int k = lo; k < hi; k++) { lSum += L[k]; lCnt++; }
+                    if (lCnt > 0)
+                    {
+                        float lMean = (float)(lSum / lCnt);
+                        // 평균 휘도에 맞도록 약한 대비 보정
+                        float curLum = 0.299f * avgLin.x + 0.587f * avgLin.y + 0.114f * avgLin.z;
+                        float gain = Mathf.Clamp(curLum > 1e-5f ? lMean / curLum : 1f, 0.8f, 1.2f);
+                        avgLin *= gain;
+                    }
+                }
+
+                // 3) 채도/대비 소폭 증강(HSL 근사)
+                avgLin = BoostSaturationContrast(avgLin, satBoost: 0.2f, contrast: 1.08f);
+
+                // 4) Linear → sRGB, 패킹
+                Vector3 avgSrgb = new Vector3(
+                    LinearToGamma01(avgLin.x),
+                    LinearToGamma01(avgLin.y),
+                    LinearToGamma01(avgLin.z)
+                );
+                byte r = (byte)Mathf.Clamp(Mathf.RoundToInt(avgSrgb.x * 255f), 0, 255);
+                byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(avgSrgb.y * 255f), 0, 255);
+                byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(avgSrgb.z * 255f), 0, 255);
+                cellColor[c] = new Color32(r, g, b, 255);
+            }
+            else
+            {
+                cellColor[c] = new Color32(255, 255, 255, 255);
+            }
+        }
+
+        // 부모 포인트별 색 할당: 부모 위치가 속한 셀의 색 사용
+        var parentColors = new Color32[parentPositions.Length];
+        for (int p = 0; p < parentPositions.Length; p++)
+        {
+            Vector3 q = parentPositions[p];
+            float fx = Mathf.Clamp01((q.x - min.x) / Mathf.Max(1e-6f, size.x));
+            float fy = Mathf.Clamp01((q.y - min.y) / Mathf.Max(1e-6f, size.y));
+            float fz = Mathf.Clamp01((q.z - min.z) / Mathf.Max(1e-6f, size.z));
+            int ix = Mathf.Min(px - 1, Mathf.FloorToInt(fx * px));
+            int iy = Mathf.Min(py - 1, Mathf.FloorToInt(fy * py));
+            int iz = Mathf.Min(pz - 1, Mathf.FloorToInt(fz * pz));
+            int ci = (iz * py + iy) * px + ix;
+            parentColors[p] = cellColor[ci];
+        }
+        return parentColors;
+
+        // 헬퍼: sRGB<->Linear 근사 (정확 버전은 UnityEngine.Mathf.GammaToLinearSpace 사용 가능)
+        static float GammaToLinear01(float c) { return Mathf.Approximately(c, 0f) ? 0f : Mathf.Pow(c, 2.2f); }
+        static float LinearToGamma01(float c) { return c <= 0f ? 0f : Mathf.Pow(c, 1f / 2.2f); }
+
+        // 헬퍼: 채도/대비 보정(리니어 공간 입력)
+        static Vector3 BoostSaturationContrast(Vector3 rgbLin, float satBoost, float contrast)
+        {
+            // 휘도 분리
+            float y = 0.299f * rgbLin.x + 0.587f * rgbLin.y + 0.114f * rgbLin.z;
+            Vector3 diff = rgbLin - new Vector3(y, y, y);
+            // 채도 부스트
+            diff *= (1f + Mathf.Clamp(satBoost, 0f, 1f));
+            // 대비 약간 증강(피벗=0.5*리니어 근사 → 저휘도 데이터 고려해 0.25로)
+            float pivot = 0.25f;
+            Vector3 outc = (rgbLin - new Vector3(pivot, pivot, pivot)) * Mathf.Clamp(contrast, 0.5f, 2.0f) + new Vector3(pivot, pivot, pivot);
+            // 채도 반영
+            outc = new Vector3(y, y, y) + diff;
+            // 클램프
+            outc.x = Mathf.Clamp01(outc.x); outc.y = Mathf.Clamp01(outc.y); outc.z = Mathf.Clamp01(outc.z);
+            return outc;
+        }
+    }
+
+    #endregion
+
 }

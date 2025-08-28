@@ -8,14 +8,7 @@ using UnityEngine;
 /// - ASCII: 헤더 이후 라인 시작 오프셋 테이블(전량 또는 샘플 간격형) 생성
 /// - Binary: stride/필드 오프셋을 계산하고 레코드 오프셋 공식을 제공
 /// - BinaryCompressed: 압축 영역의 시작/크기 및 SOA 레이아웃 메타만 제공(랜덤 접근이 제한적)
-///
-/// 사용 흐름:
-///   using var fs = new FileStream(path, ...);
-///   long dataOffset;
-///   var header = PcdLoader.ReadHeaderOnly(fs, out dataOffset);
-///   var index = PcdIndexBuilder.Build(fs, header, dataOffset, new BuildOptions{ ... });
-///
-/// 주의: FileStream.Position은 Build 수행 중 변경됩니다. 외부에서 이후 읽기를 할 때는 원하는 위치로 재설정할 것.
+
 public static class PcdIndexBuilder
 {
     public enum PcdDataMode { ASCII, Binary, BinaryCompressed }
@@ -221,7 +214,7 @@ public static class PcdIndexBuilder
         idx.Stride = stride;
         idx.FieldOffsets = fieldOffsets;
 
-        // 유효성 검사: 파일 크기 확인(느슨하게)
+        // 유효성 검사: 파일 크기 확인 (느슨하게)
         long remain = fs.Length - idx.DataStart;
         long needed = (long)stride * idx.Points;
         if (remain < needed)
@@ -277,9 +270,6 @@ public static class PcdIndexBuilder
         }
 
         idx.Soa = L;
-
-        // 참고: 랜덤 접근은 불가. 이후 Subloader에서 스트림 디코딩을 한 번 흘리며 필터링/샘플링하도록 설계.
-        // 여기서는 메타데이터만 제공.
     }
 
     // ===== 편의 메서드 =====

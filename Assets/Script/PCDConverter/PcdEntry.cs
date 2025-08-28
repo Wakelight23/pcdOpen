@@ -31,18 +31,18 @@ public class PcdEntry : MonoBehaviour
 
     [Header("Streaming options")]
     [Tooltip("스트리밍 스케줄러 포인트 예산")]
-    public int pointBudget = 5_000_000;
+    public int pointBudget = 1_000_000;
     [Tooltip("화면 에러 타깃(작을수록 더 높은 LOD 유도)")]
-    public float screenErrorTarget = 2.0f;
-    public int maxLoadsPerFrame = 2;
+    public float screenErrorTarget = 8.0f;
+    public int maxLoadsPerFrame = 1;
     public int maxUnloadsPerFrame = 4;
     [Tooltip("루트 초기 샘플 개수(스트리밍 모드)")]
     public int rootSampleCount = 200_000;
     [Tooltip("옥트리 최대 깊이(스트리밍 모드)")]
     public int octreeMaxDepth = 8;
     [Tooltip("최소/최대 포인트(노드 분할 기준)")]
-    public int minPointsPerNode = 4096;
-    public int maxPointsPerNode = 200_000;
+    public int minPointsPerNode = 30;
+    public int maxPointsPerNode = 1024;
 
     [Header("Runtime options")]
     [Tooltip("GPU 업로드 후 CPU 배열 해제(단발 로더 경로)")]
@@ -371,6 +371,14 @@ public class PcdEntry : MonoBehaviour
         _ = InitializeWithPathAsync(_lastPath);
     }
 #endif
+
+#if UNITY_EDITOR
+    [ContextMenu("Clear Memory (CPU+GPU)")]
+#endif
+    public void ClearMemoryNow()
+    {
+        _ = PcdMemoryTools.ClearAllAsync(gpuRenderer);
+    }
 
     #region ProgressBar Util
     static public void Report(float t, string label = null)

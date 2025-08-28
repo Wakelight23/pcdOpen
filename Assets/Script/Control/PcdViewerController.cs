@@ -49,6 +49,10 @@ public class PcdViewerController : MonoBehaviour
 
     void Update()
     {
+        // UI 창 위에 마우스가 있으면 카메라 조작 차단
+        if (PcdGpuRendererUI.InputBlockedByUI) return;
+
+        // 대상 카메라
         var cam = (targetCamera != null) ? targetCamera : Camera.main;
         if (cam == null) return;
 
@@ -57,6 +61,7 @@ public class PcdViewerController : MonoBehaviour
         HandlePan(cam);
         HandleZoom(cam); // 항상 호출되어야 함(요구 5)
         HandleFrame(cam);
+
     }
 
     void UpdateButtons()

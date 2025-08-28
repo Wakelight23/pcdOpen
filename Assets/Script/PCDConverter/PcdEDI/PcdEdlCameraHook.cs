@@ -43,7 +43,7 @@ public class PcdEdlCameraHook : MonoBehaviour
         foreach (var r in _renderers)
         {
             if (r == null || !r.isActiveAndEnabled) continue;
-            r.RenderIndirect(_cb, _cam);
+            r.RenderSplatAccum(_cb, _cam);
         }
 
         // 2) EDL ÇÕ¼º

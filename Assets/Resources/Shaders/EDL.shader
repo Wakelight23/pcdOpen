@@ -18,7 +18,7 @@ Shader "Shaders/EDL"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             TEXTURE2D(_PcdColor); SAMPLER(sampler_PcdColor);
-            TEXTURE2D(_PcdDepth); SAMPLER(sampler_PcdDepth);
+            TEXTURE2D_X_FLOAT(_CameraDepthTexture); SAMPLER(sampler_CameraDepthTexture); 
 
             float4 _ScreenPx;       // (w,h,0,0)
             float _EdlRadius;
@@ -37,7 +37,7 @@ Shader "Shaders/EDL"
             }
 
             float2 px(float2 d) { return d / _ScreenPx.xy; }
-            float sampleDepth(float2 uv) { return SAMPLE_TEXTURE2D(_PcdDepth, sampler_PcdDepth, uv).r; }
+            float sampleDepth(float2 uv) { return SAMPLE_TEXTURE2D_X(_CameraDepthTexture, sampler_CameraDepthTexture, uv).r; }
             float3 sampleColor(float2 uv) { return SAMPLE_TEXTURE2D(_PcdColor, sampler_PcdColor, uv).rgb; }
             float LinearEyeDepth(float d, float4x4 proj) {
                 // URP에서 반전 z 여부에 따라 분기 가능. 간단화 버전:
@@ -45,8 +45,8 @@ Shader "Shaders/EDL"
             }
 
             float edlWeight(float d0, float di) {
-                float z0 = LinearEyeDepth(d0, UNITY_MATRIX_P);
-                float zi = LinearEyeDepth(di, UNITY_MATRIX_P);
+                float zi = Linear01Depth(d0, _ZBufferParams);
+                float z0 = LinearEyeDepth(di, _ZBufferParams);
                 return abs(zi - z0);
             }
 

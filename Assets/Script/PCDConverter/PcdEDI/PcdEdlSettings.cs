@@ -1,5 +1,7 @@
 using UnityEngine;
 
+
+[CreateAssetMenu(fileName = "PcdEDLSettings", menuName = "Rendering/Pcd EDL Settings", order = 10)]
 [System.Serializable]
 public class PcdEdlSettings : ScriptableObject
 {

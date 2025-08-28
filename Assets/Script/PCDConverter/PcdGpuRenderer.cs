@@ -9,7 +9,7 @@ public class PcdGpuRenderer : MonoBehaviour
     [Header("Render")]
     public Material pointMaterial;               // Custom/PcdBillboardIndirect 기반
     [Range(0.5f, 64.0f)]
-    public float pointSize = 5.0f;               // 픽셀 단위
+    public float pointSize = 4.0f;               // 픽셀 단위
     public bool useColors = true;
     [Range(0, 1)] public float softEdge = 0.1f;
     public bool roundMask = true;
@@ -25,10 +25,6 @@ public class PcdGpuRenderer : MonoBehaviour
     [Range(0.5f, 128f)] public float maxPixelSize = 8.0f;
     [Range(0.01f, 10f)] public float attenuationScale = 1.0f;   // 1/d 스케일 계수
     [Range(0.0f, 16f)] public float adaptiveScale = 0.0f;        // Adaptive 가산
-
-    // 내부 렌더 모드
-    public enum RenderMode { IndirectBillboard }
-    public RenderMode renderMode = RenderMode.IndirectBillboard;
 
     // 노드 버퍼 구조
     class NodeBuffers
@@ -46,6 +42,23 @@ public class PcdGpuRenderer : MonoBehaviour
     // 공유 쿼드 메쉬
     static Mesh s_quad;
     static readonly uint[] s_argsTemplate = new uint[5]; // indexCountPerInstance, instanceCount, startIndex, baseVertex, startInstance
+
+    // Fade
+    readonly Dictionary<int, (float fade, int mode)> _nodeFades = new();
+    static readonly int ID_LodFade = Shader.PropertyToID("_LodFade");
+    static readonly int ID_DitherFade = Shader.PropertyToID("_DitherFade"); // 0/1
+
+    // splatAccum
+    // [SerializeField] Material pointMaterial; // Shader "Custom/PcdSplatAccum"
+    public float kernelSharpness = 1.5f;
+    public bool gaussianKernel = false;
+    static readonly int ID_Positions = Shader.PropertyToID("_Positions");
+    static readonly int ID_Colors = Shader.PropertyToID("_Colors");
+    static readonly int ID_HasColor = Shader.PropertyToID("_HasColor");
+    static readonly int ID_PointSize = Shader.PropertyToID("_PointSize");
+    static readonly int ID_KernelSharpness = Shader.PropertyToID("_KernelSharpness");
+    static readonly int ID_Gaussian = Shader.PropertyToID("_Gaussian");
+    static readonly int ID_L2W = Shader.PropertyToID("_LocalToWorld");
 
     // 메인스레드 체크
     static bool IsMainThread()
@@ -69,6 +82,14 @@ public class PcdGpuRenderer : MonoBehaviour
         s_quad.SetVertices(verts);
         s_quad.SetIndices(idx, MeshTopology.Triangles, 0);
         s_quad.UploadMeshData(true);
+    }
+
+    // Fade mode
+    public void SetPerNodeLodFade(IList<(int nodeId, float fade, int mode)> items)
+    {
+        _nodeFades.Clear();
+        if (items == null) return;
+        for (int i = 0; i < items.Count; i++) _nodeFades[items[i].nodeId] = (items[i].fade, items[i].mode);
     }
 
     // ====== 외부 API ======
@@ -195,7 +216,7 @@ public class PcdGpuRenderer : MonoBehaviour
     }
 
     // RenderIndirect (SRP용)
-    public void RenderIndirect(CommandBuffer cmd, Camera cam)
+    /*public void RenderIndirect(CommandBuffer cmd, Camera cam)
     {
         if (pointMaterial == null) return;
         if (_drawOrder.Count == 0) return;
@@ -213,7 +234,7 @@ public class PcdGpuRenderer : MonoBehaviour
         // Color
         //pointMaterial.SetColor("_Tint", Color.white);
         pointMaterial.SetVector("_DistRange", new Vector2(10.0f, 200f));
-        pointMaterial.SetVector("_ColorAtten", new Vector2(0.4f, 0.2f));
+        pointMaterial.SetVector("_ColorAtten", new Vector2(0.1f, 0f));
 
         // 화면/행렬 전달
         // pointMaterial.SetVector("_PcdScreenSize", new Vector4(cam.pixelWidth, cam.pixelHeight, 0, 0));
@@ -245,6 +266,12 @@ public class PcdGpuRenderer : MonoBehaviour
 
             pointMaterial.SetBuffer("_Positions", nb.pos);
 
+            // Fade 파라미터 전달
+            float fade = 1f; int fmode = 0;
+            if (_nodeFades.TryGetValue(nodeId, out var f)) { fade = f.fade; fmode = f.mode; }
+            pointMaterial.SetFloat(ID_LodFade, fade);
+            pointMaterial.SetFloat(ID_DitherFade, (fmode == 2) ? 1f : 0f);
+
             if (useColors && nb.col != null)
             {
 
@@ -271,27 +298,26 @@ public class PcdGpuRenderer : MonoBehaviour
                 null
             );
         }
-    }
+    }*/
 
-    // RenderSplatAccum (URP/HDRP용, MRT 누적)
-    /*public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
+    // splatAccum 렌더링 (SRP용)
+    public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
     {
-        if (pointMaterial == null) return;
         if (_drawOrder.Count == 0) return;
-        if (renderMode != RenderMode.IndirectBillboard) return;
-
+        if (pointMaterial == null)
+        {
+            // 지연 생성(프로젝트에 셰이더 포함)
+            var sh = Shader.Find("Custom/PcdSplatAccum");
+            if (sh == null) return;
+            pointMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
         EnsureQuad();
 
-        // Accumulation용 공통 상수 설정
-        // 주의: 이 머티리얼은 MRT(Additive) 전용 셰이더(PcdSplatAccum 등)를 가정
-        pointMaterial.SetFloat("_PointSize", pointSize);
-        // weighted splats에서 소프트에지는 커널 샤프니스/가우시안으로 대체되지만
-        // 동일 머티리얼을 공유한다면 필요한 파라미터를 설정
-        //pointMaterial.SetFloat("_KernelSharpness", kernelSharpness);
-        //pointMaterial.SetFloat("_Gaussian", useGaussian ? 1f : 0f);
-
-        // 간단한 로컬→월드 전달(셰이더에서 _LocalToWorld 사용)
-        pointMaterial.SetMatrix("_LocalToWorld", transform.localToWorldMatrix);
+        // 공통 상수(머티리얼 프로퍼티 블록으로도 가능)
+        pointMaterial.SetFloat(ID_PointSize, pointSize);
+        pointMaterial.SetFloat(ID_KernelSharpness, kernelSharpness);
+        pointMaterial.SetFloat(ID_Gaussian, gaussianKernel ? 1f : 0f);
+        pointMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
 
         for (int i = 0; i < _drawOrder.Count; i++)
         {
@@ -299,34 +325,31 @@ public class PcdGpuRenderer : MonoBehaviour
             if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
             if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
 
-            // 필수 버퍼 바인딩
-            pointMaterial.SetBuffer("_Positions", nb.pos);
+            pointMaterial.SetBuffer(ID_Positions, nb.pos);
 
             if (useColors && nb.col != null)
             {
-                pointMaterial.SetBuffer("_Colors", nb.col);
-                pointMaterial.SetInt("_HasColor", 1);
+                pointMaterial.SetBuffer(ID_Colors, nb.col);
+                pointMaterial.SetInt(ID_HasColor, 1);
             }
             else
             {
-                pointMaterial.SetInt("_HasColor", 0);
+                pointMaterial.SetInt(ID_HasColor, 0);
             }
 
-            // 넓은 Bounds로 컬링 회피(필요 시 nb.bounds 사용)
             var bounds = nb.bounds.size.sqrMagnitude > 0
                 ? nb.bounds
                 : new Bounds(transform.position, Vector3.one * 1000000f);
 
-            // MRT 누적(Additive)이 설정된 패스 인덱스(보통 0)로 인디렉트 드로우
             cmd.DrawMeshInstancedIndirect(
                 s_quad,
                 0,
                 pointMaterial,
-                0,      // accumulation shader pass index
+                0,       // PcdSplatAccum은 Pass 0만 존재
                 nb.args,
                 0,
                 null
             );
         }
-    }*/
+    }
 }

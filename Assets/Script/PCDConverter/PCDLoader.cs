@@ -6,10 +6,9 @@ using UnityEngine;
 
 public static class PcdLoader
 {
-    // 기존 옵션 유지
     public static bool UseStreamingForCompressed = true;
 
-    // 변경점 1) Header/SoaLayout을 public으로 노출
+    // Header/SoaLayout을 public으로 노출
     public class Header
     {
         public string VERSION;
@@ -33,7 +32,7 @@ public static class PcdLoader
         public int totalBytes;      // 전체 SOA 바이트 수
     }
 
-    // 변경점 2) 외부에서 헤더/오프셋만 얻는 API 추가
+    // 외부에서 헤더/오프셋만 얻는 API
     public static Header ReadHeaderOnly(string path, out long dataOffset)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -41,14 +40,14 @@ public static class PcdLoader
         return ParseHeaderStreaming(sr, out dataOffset);
     }
 
-    // 변경점 3) FileStream이 이미 열려있는 경우 헤더만 파싱하는 API
+    // FileStream이 이미 열려있는 경우 헤더만 파싱하는 API
     public static Header ReadHeaderOnly(FileStream fs, out long dataOffset)
     {
         using var sr = new StreamReader(fs, Encoding.ASCII, detectEncodingFromByteOrderMarks: false, bufferSize: 128 * 1024, leaveOpen: true);
         return ParseHeaderStreaming(sr, out dataOffset);
     }
 
-    // 변경점 4) SOA 레이아웃 공개 유틸
+    // SOA 레이아웃 공개 유틸
     public static SoaLayout BuildSoaLayout(Header h, int points)
     {
         int fields = h.FieldCount;
@@ -70,7 +69,7 @@ public static class PcdLoader
         return L;
     }
 
-    // 기존: 전체 파일을 읽어 PcdData 생성
+    // 전체 파일을 읽어 PcdData 생성
     public static PcdData LoadFromFile(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -159,7 +158,7 @@ public static class PcdLoader
         return data;
     }
 
-    // 변경점 5) 부분 읽기 지원을 위한 헬퍼: 바이너리 레코드 크기/오프셋 계산 공개
+    // 부분 읽기 지원을 위한 헬퍼: 바이너리 레코드 크기/오프셋 계산 공개
     public static int ComputeBinaryStride(Header h)
     {
         int stride = 0;
@@ -503,8 +502,6 @@ public static class PcdLoader
 
         public bool Finished => ip >= srcEnd;
     }
-
-    // 변경: SoaLayout은 public으로 승격했으므로 여기서는 내부 유틸을 사용하지 않고 그대로 활용
 
     static unsafe void ConsumeSoaSliceIntoArrays(
         byte[] chunk, int chunkOff, int countBytes,

@@ -13,10 +13,10 @@ Shader "Custom/PcdSplatAccum"
         {
             // MRT 누적용 Additive
             ZTest LEqual
-            ZWrite Off
+            ZWrite On
             Cull Off
             Blend One One
-            ColorMask RGB
+            ColorMask RGBA
 
             HLSLPROGRAM
             #pragma target 4.5
@@ -84,8 +84,8 @@ Shader "Custom/PcdSplatAccum"
             }
 
             struct FragOut {
-                float4 colorAccum : SV_Target0; // RGB = color * weight
-                float4 weightAccum: SV_Target1; // R = weight
+                half4 colorAccum : SV_Target0; // RGB = color * weight
+                half4 weightAccum: SV_Target1; // R = weight
             };
 
             FragOut Frag(v2f i)
@@ -110,14 +110,16 @@ Shader "Custom/PcdSplatAccum"
                     weight = pow(dlin, max(_KernelSharpness, 1.0));
                 }
 
-                float3 col = float3(1,1,1);
+                half3 col = half3(1,1,1);
                 if (_HasColor == 1)
                 {
                     col = UnpackRGBA8(_Colors[i.pid]);
                 }
 
-                o.colorAccum = float4(col * weight, 0);
-                o.weightAccum = float4(weight, 0,0,0);
+                // 중요: 컬러와 가중치 모두 명시적으로 설정
+                o.colorAccum = half4(col * weight, 1.0);  // Alpha를 1.0으로 설정
+                o.weightAccum = half4(weight, 0, 0, 1.0); // 가중치는 R 채널에만
+    
                 return o;
             }
             ENDHLSL
