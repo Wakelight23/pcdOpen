@@ -11,7 +11,7 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 	- 깊이에 따른 색상 표현이 추가되었습니다.
 	
 ## Build File
-[PcdOpen(Window)]https://drive.google.com/file/d/1nXWOE-S-Ted96H-sITy1VjYtXZGJH5ZZ/view?usp=sharing
+[PcdOpen(Window)](https://drive.google.com/file/d/1nXWOE-S-Ted96H-sITy1VjYtXZGJH5ZZ/view?usp=sharing)
 
 ### Notice
 - 용량이 높아질수록 불러오기 시간이 길어집니다.
