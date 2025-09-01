@@ -15,6 +15,8 @@ public sealed class PcdOctree
         public Node[] Children;            // 8개 또는 null
         public bool IsLeaf => Children == null;
 
+        public float Spacing;
+
         // 렌더/스트리밍 상태 플래그(외부 스케줄러가 사용)
         public bool IsLoaded;              // GPU에 업로드 완료
         public bool IsRequested;           // IO/디코드 요청 중
@@ -31,6 +33,7 @@ public sealed class PcdOctree
     public int MaxDepth { get; private set; } = 8;         // 필요 시 조정
     public int MinPointsPerNode { get; private set; } = 4096;
     public int MaxPointsPerNode { get; private set; } = 200_000;
+    public float RootSpacing { get; private set; } = 1.0f;
 
     // NodeId 발급
     int _nextId;
@@ -41,6 +44,7 @@ public sealed class PcdOctree
         public int maxDepth;
         public int minPointsPerNode;
         public int maxPointsPerNode;
+        public float rootSpacing;
     }
 
     public PcdOctree() { }
@@ -50,6 +54,7 @@ public sealed class PcdOctree
         if (p.maxDepth > 0) MaxDepth = p.maxDepth;
         if (p.minPointsPerNode > 0) MinPointsPerNode = p.minPointsPerNode;
         if (p.maxPointsPerNode > 0) MaxPointsPerNode = p.maxPointsPerNode;
+        if (p.rootSpacing > 0) RootSpacing = p.rootSpacing;
     }
 
     // 초기 빌드: 샘플된 포인트 인덱스 + 해당 포인트들의 좌표로 루트 AABB 계산
@@ -71,7 +76,8 @@ public sealed class PcdOctree
             PointIds = new List<int>(samplePointIds),
             Children = null,
             IsLoaded = false,
-            IsRequested = false
+            IsRequested = false,
+            Spacing = RootSpacing
         };
 
         return Root;
@@ -151,7 +157,8 @@ public sealed class PcdOctree
                 Level = node.Level + 1,
                 Bounds = childBounds[i],
                 PointIds = new List<int>(Mathf.Min(ids.Count / 8 + 64, MaxPointsPerNode)),
-                Children = null
+                Children = null,
+                Spacing = Mathf.Max(1e-6f, node.Spacing * 0.5f)
             };
         }
 

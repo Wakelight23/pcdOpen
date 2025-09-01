@@ -382,57 +382,105 @@ public sealed class PcdStreamingController : MonoBehaviour
         if (gpuRenderer == null) return;
         if (nodes == null || nodes.Count == 0)
         {
-            if (IsMainThread()) gpuRenderer.SetDrawOrder(null);
-            else _ = RunOnMainThreadAsync(() => gpuRenderer.SetDrawOrder(null));
+            if (IsMainThread())
+            {
+                gpuRenderer.SetDrawOrder(null);
+                // 메타 초기화가 필요하면 여기서 gpuRenderer 쪽에 리셋 API를 호출하도록 확장 가능
+            }
+            else
+            {
+                _ = RunOnMainThreadAsync(() =>
+                {
+                    gpuRenderer.SetDrawOrder(null);
+                });
+            }
             return;
         }
 
-        // 1) 정렬용 임시 리스트 복사
+        // 1) 정렬 사본 만들기
         var sorted = new List<IOctreeNode>(nodes.Count);
         for (int i = 0; i < nodes.Count; i++)
             sorted.Add(nodes[i]);
 
-        // 2) 카메라 거리 기반 정렬
-        // FrontToBack: 오름차순 (가까운 것 먼저)
-        // BackToFront: 내림차순 (먼 것 먼저)
+        // 2) 거리 기반 정렬
         if (drawSortMode == DrawSortMode.FrontToBack)
         {
             sorted.Sort((a, b) =>
             {
                 float da = ComputeCameraDistanceSqr(a);
                 float db = ComputeCameraDistanceSqr(b);
-                return da.CompareTo(db); // 가까운 것 먼저
+                return da.CompareTo(db);
             });
         }
-        else // BackToFront
+        else
         {
             sorted.Sort((a, b) =>
             {
                 float da = ComputeCameraDistanceSqr(a);
                 float db = ComputeCameraDistanceSqr(b);
-                return db.CompareTo(da); // 먼 것 먼저
+                return db.CompareTo(da);
             });
         }
 
-        // 3) 정렬된 ID 배열로 변환
+        // 3) 드로우 순서 및 페이드 수집
         var order = new List<int>(sorted.Count);
         var nodeFades = new List<(int nodeId, float fade, int mode)>(sorted.Count);
+
+        // 4) 노드 메타(spacing, level) 수집
+        // IOctreeNode는 Level만 노출. spacing은 PcdOctree.Node만 보유하므로 어댑터 통해 접근
+        var metas = new List<(int nodeId, float spacing, int level)>(sorted.Count);
+
         for (int i = 0; i < sorted.Count; i++)
         {
             var n = sorted[i];
             order.Add(n.NodeId);
+
             int mode;
             float t = GetFadeFactor(n.NodeId, out mode);
             nodeFades.Add((n.NodeId, t, mode));
+
+            // 안전한 다운캐스팅: OctNodeAdapter -> Inner(PcdOctree.Node)
+            float spacing = 1.0f;
+            int level = n.Level;
+            if (n is OctNodeAdapter ada && ada.Inner != null)
+            {
+                // Inner.Level은 IOctreeNode.Level과 동일한 의미
+                level = ada.Inner.Level;
+                // Spacing 필드는 PcdOctree.Node에만 존재(이전 단계에서 채워져 있어야 함)
+                // 없으면 기본값 유지(1.0f)
+                var s = ada.Inner.GetType().GetField("Spacing", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (s != null)
+                {
+                    object v = s.GetValue(ada.Inner);
+                    if (v is float f && f > 0) spacing = f;
+                }
+            }
+            metas.Add((n.NodeId, spacing, level));
         }
+
+        // 5) 메인스레드에서 일괄 커밋(SetNodeMeta -> SetPerNodeLodFade -> SetDrawOrder)
         if (IsMainThread())
         {
+            // 메타 주입
+            for (int i = 0; i < metas.Count; i++)
+            {
+                var m = metas[i];
+                gpuRenderer.SetNodeMeta(m.nodeId, m.spacing, m.level);
+            }
+            // 페이드/드로우 순서 적용
             gpuRenderer.SetDrawOrder(order);
-            gpuRenderer.SetPerNodeLodFade(nodeFades);
         }
         else
         {
-            _ = RunOnMainThreadAsync(() => { gpuRenderer.SetDrawOrder(order); gpuRenderer.SetPerNodeLodFade(nodeFades); });
+            _ = RunOnMainThreadAsync(() =>
+            {
+                for (int i = 0; i < metas.Count; i++)
+                {
+                    var m = metas[i];
+                    gpuRenderer.SetNodeMeta(m.nodeId, m.spacing, m.level);
+                }
+                gpuRenderer.SetDrawOrder(order);
+            });
         }
     }
 

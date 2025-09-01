@@ -438,17 +438,20 @@ MonoBehaviour:
   pointMaterial: {fileID: 2100000, guid: 56d645142647ba14a8509d3fd06b373a, type: 2}
   pointSize: 4
   useColors: 1
-  softEdge: 0.1
-  roundMask: 1
+  minPixelSize: 1.25
+  maxPixelSize: 8
+  sizeK: 1
+  parentFadeBase: 0.7
+  distanceFadeNear: 5
+  distanceFadeFar: 200
+  kernelSharpness: 0.5
+  gaussianKernel: 0
+  splatDepthProxyMaterial: {fileID: 2100000, guid: 5276a3fdc9a4c86488a2b3dd381ec139, type: 2}
+  splatColorLiteMaterial: {fileID: 2100000, guid: 879e2b0644ccffb488795431b15c7665, type: 2}
+  depthMatchEps: 0.5
   totalPointCount: 0
   activeNodeCount: 0
-  sizeMode: 2
-  minPixelSize: 1
-  maxPixelSize: 8
-  attenuationScale: 1.05
-  adaptiveScale: 1
-  kernelSharpness: 1.5
-  gaussianKernel: 0
+  maxDepthForMaterial: 8
 --- !u!114 &488953053
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -475,7 +478,7 @@ MonoBehaviour:
   rootSampleCount: 1000000
   octreeMaxDepth: 8
   minPointsPerNode: 30
-  maxPointsPerNode: 1024
+  maxPointsPerNode: 200000
   releaseCpuArraysAfterUpload: 1
 --- !u!4 &488953056 stripped
 Transform:
@@ -497,7 +500,7 @@ MonoBehaviour:
   pcdPath: "C:/Users/rlghk/Desktop/aiworkx/pcdFile/1\uC5B5.pcd"
   useColors: 1
   normalizeToOrigin: 1
-  drawSortMode: 0
+  drawSortMode: 1
   octreeMaxDepth: 8
   minPointsPerNode: 30
   maxPointsPerNode: 320000
@@ -530,7 +533,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetRenderer: {fileID: 488953045}
-  streamingController: {fileID: 0}
+  renderFeature: {fileID: -5045952451600284947, guid: 2f2b2fc2984c263439a016844bf95b0b, type: 2}
   showUI: 0
   toggleKey: 282
   windowTitle: PcdGpuRenderer Settings
@@ -555,16 +558,16 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   settings:
-    surfaceThreshold: 0.02
-    normalSmoothRadius: 0.1
+    surfaceThreshold: 0.0619
+    normalSmoothRadius: 0.222
     kNeighbors: 8
-    contrastBoost: 1.2
-    saturationBoost: 1.1
-    enableOutlierRemoval: 1
+    contrastBoost: 1.309
+    saturationBoost: 1.037
+    enableOutlierRemoval: 0
   useJobSystem: 1
-  interiorColor: {r: 0.2, g: 0.8, b: 0.2, a: 1}
-  exteriorColor: {r: 0.8, g: 0.2, b: 0.2, a: 1}
-  boundaryColor: {r: 0.2, g: 0.2, b: 0.8, a: 1}
+  interiorColor: {r: 0.8018868, g: 0.8018868, b: 0.8018868, a: 1}
+  exteriorColor: {r: 0.3773585, g: 0.3773585, b: 0.3773585, a: 1}
+  boundaryColor: {r: 0.18111429, g: 0.6981132, b: 0.33429918, a: 1}
   unknownColor: {r: 1, g: 1, b: 1, a: 1}
 --- !u!1 &646825571
 GameObject:
@@ -931,7 +934,6 @@ GameObject:
   - component: {fileID: 963194227}
   - component: {fileID: 963194226}
   - component: {fileID: 963194230}
-  - component: {fileID: 963194231}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -1026,8 +1028,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_RenderShadows: 0
-  m_RequiresDepthTextureOption: 1
-  m_RequiresOpaqueTextureOption: 1
+  m_RequiresDepthTextureOption: 2
+  m_RequiresOpaqueTextureOption: 2
   m_CameraType: 0
   m_Cameras: []
   m_RendererIndex: 0
@@ -1057,20 +1059,6 @@ MonoBehaviour:
     m_MipBias: 0
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
---- !u!114 &963194231
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 963194225}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e2d3e0d9db2ac4f4c8f607d3e8eff26c, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  settings: {fileID: 11400000, guid: a922b3c0a2866614b9f8de7dd0c99854, type: 2}
-  edlShader: {fileID: 4800000, guid: 59ae898a2fb5a4243b2364117b0a7b74, type: 3}
 --- !u!224 &1008845348 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 170184037137332956, guid: 504ea87917232804a8137d6015de6b11, type: 3}

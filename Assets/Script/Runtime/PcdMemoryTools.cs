@@ -10,7 +10,6 @@ public static class PcdMemoryTools
         var streaming = Object.FindAnyObjectByType<PcdStreamingController>();
         var billboardSys = Object.FindAnyObjectByType<PcdBillboardRenderSystem>();
         var edlHook = Object.FindAnyObjectByType<PcdEdlCameraHook>();
-        var urpRF = Object.FindAnyObjectByType<PcdEdlRenderFeature>();
 
         // 스트리밍 컨트롤러 완전 정리(비동기)
         if (streaming != null) { await streaming.DisposeAsync(); } // 내부에서 gpuRenderer.ClearAllNodes 호출 포함[10]
@@ -42,12 +41,8 @@ public static class PcdMemoryTools
 
         // 2-4) URP 패스 내부 RTHandle은 프레임마다 ReAllocateIfNeeded로 관리되며,
         // Pass 인스턴스가 유지되는 경우 카메라 전환 시 자동 재할당됨. 명시적 해제가 필요하면
-        // 패스에 Dispose/OnCameraCleanup에서 RTHandle.Release()를 추가하는 게 가장 안전.
+        // 패스에 Dispose/OnCameraClenup에서 RTHandle.Release()를 추가하는 게 가장 안전.
         // 여기서는 렌더피처 토글로 우회:
-        if (urpRF != null)
-        {
-            urpRF.SetActive(false); // 필요시 ScriptableRendererFeature 확장으로 토글 구현
-        }
 
         // 3) CPU 메모리 정리(인덱스/캐시/배열)
         // - 스트리밍 DisposeAsync에서 _posCache/_requestedNodes/서브로더/인덱스/옥트리 null 처리 완료[10]
