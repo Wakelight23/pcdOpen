@@ -12,9 +12,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 42f7b33c541b02f4e927cf6858d946f8, type: 3}
   m_Name: PcdEDLSettings
   m_EditorClassIdentifier: 
-  edlRadius: 1.1
-  edlStrength: 0.596
-  brightnessBoost: 0.908
+  edlRadius: 3.34
+  edlStrength: 0.82
+  brightnessBoost: 1.31
   highQuality: 1
-  colorFormat: 2
   depthFormat: 14
+  depthMatchEps: 0.00001
+  frontOnlyInAccum: 1
+  frontOnlyInColorLite: 1
+  colorFormat: 2

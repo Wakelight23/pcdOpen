@@ -13,7 +13,8 @@ Material:
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
   m_InvalidKeywords:
-  - _GAUSSIAN_ON
+  - _DISTMODE_MULTIPLY
+  - _USEDISTANCECOLOR_ON
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
@@ -23,11 +24,25 @@ Material:
   m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
-    m_TexEnvs: []
+    m_TexEnvs:
+    - _PcdDepthRT:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _Gaussian: 1
-    - _KernelSharpness: 2.14
-    - _PointSize: 28.5
-    m_Colors: []
+    - _DepthMatchEps: 0.022091573
+    - _DistMode: 1
+    - _EdlStrength: 0.40760252
+    - _FarDist: 20.304699
+    - _Gaussian: 0
+    - _KernelSharpness: 0.66
+    - _MaxDepth: 8
+    - _NearDist: 8.939367
+    - _NodeLevel: 0
+    - _PointSize: 9.399054
+    - _UseDistanceColor: 1
+    m_Colors:
+    - _FarColor: {r: 0.6367924, g: 0.67290133, b: 1, a: 1}
+    - _NearColor: {r: 0.990566, g: 0.8094101, b: 0.07008721, a: 1}
   m_BuildTextureStacks: []

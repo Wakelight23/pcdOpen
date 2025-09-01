@@ -36,6 +36,7 @@ public sealed class PcdStreamScheduler
     public float HysteresisFactor = 1.2f;  // LOD 들쭉날쭉 방지(하향 전환은 느슨하게)
     public float DistanceFalloff = 1.0f;   // 거리 감쇠 가중치
     public float PriorityBoostLoadedParent = 1.5f; // 부모가 이미 로드된 자식의 우선순위 가중
+    public float ParentKeepBudgetFraction = 0.9f;
 
     // 콜백(외부 컨트롤러가 구현)
     public Action<IOctreeNode> RequestLoad;     // IO + GPU 업로드 트리거(비동기)
@@ -250,6 +251,8 @@ public sealed class PcdStreamScheduler
         {
             var n = sc.Node;
 
+            bool allowParentOverlay = (activePoints < (int)(PointBudget * ParentKeepBudgetFraction));
+
             // 프레임 예산 확인
             if (activePoints + sc.EstimatedPoints > PointBudget)
             {
@@ -261,7 +264,10 @@ public sealed class PcdStreamScheduler
             {
                 // 유지 조건(keepLoaded) 검사
                 if (!keepLoaded.Contains(n.NodeId))
-                    continue;
+                {
+                    if (!allowParentOverlay) continue;
+                }
+
                 // 활성화
                 MarkActive(n, ref activePoints);
             }

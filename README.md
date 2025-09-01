@@ -6,18 +6,20 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 
 이 Viewer는 .pcd 확장자 데이터를 확인하기 위해 제작되었습니다.
 
-## Patch Note (ver 0.0.4)
-	- Shader 변경 (BillboardIndirect 방식 -> MRT 누적 표현)
-	- 깊이에 따른 색상 표현이 추가되었습니다.
+## Patch Note (ver 0.0.5)
+	- EDL 적용이 불분명하던 부분을 재정립하여 작동하도록 수정했습니다.
+	- 모든 Point가 렌더링되던 방식에서 화면에 보이는 부분만 렌더링 되도록 변경되었습니다.
+    - 깊이에 따라 색상이 변경됩니다.
+    - UI에 그래픽 옵션 추가 및 변경되었습니다.
 	
 ## Build File
-[PcdOpen(Window)](https://drive.google.com/file/d/1nXWOE-S-Ted96H-sITy1VjYtXZGJH5ZZ/view?usp=sharing)
+[PcdOpen_ver0.0.5 (Window)](https://drive.google.com/file/d/1fDlPgfsnFEjV5CzTSOUvaYDn0Cu1Yi9P/view?usp=sharing)
 
 ### Notice
 - 용량이 높아질수록 불러오기 시간이 길어집니다.
-- Point Budget을 높일수록 그래픽 로드율이 높아집니다.
-- Point Budget을 낮추면 저사양에서도 쾌적하게 사용할 수 있지만 가시성이 떨어집니다.
-- Root Sample 수치를 높이면 더 정확한 Point Cloud를 얻을 수 있지만 크래픽 로드율이 높아집니다.
+- Root Sample 수치를 높이면 더 정확한 Point Cloud를 얻을 수 있지만 그래픽 로드율이 높아집니다.
+- Gaussian 옵션을 조작하면 Point 모양이 변경됩니다.
+- UI에 있는 옵션의 값을 조작해도 변경되지 않는 값들이 있습니다.
 
 ## Dev Note
 <details>
@@ -59,9 +61,10 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 <details>
 <summary>#4</summary>
 
-20250828 ~ 
+20250828 ~ 20250901
 - 계층별 색상 표현 구현
 - MRT 누적 기법 사용 (Accum, Normalize)
+- 깊이에 따른 색상 표현 변경 -> 카메라 기준으로 거리에 따라 색 변경
 
 </details>
 

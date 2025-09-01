@@ -3,44 +3,28 @@ using UnityEngine;
 [DefaultExecutionOrder(10000)]
 public class PcdGpuRendererUI : MonoBehaviour
 {
-    [Header("Target")]
+    [Header("Targets")]
     public PcdGpuRenderer targetRenderer;
-
-    [Header("Color Mapping UI")]
-    public PcdStreamingController streamingController;
+    public PcdBillboardRenderFeature renderFeature; // URP 렌더 피처
 
     [Header("Window")]
     public bool showUI = false;
     public KeyCode toggleKey = KeyCode.F1;
-    public string windowTitle = "PCD Renderer Settings";
+    public string windowTitle = "Pcd Runtime Graphics Options";
     public int windowId = 732841;
-    public Rect windowRect = new Rect(20, 20, 380, 600);
+    public Rect windowRect = new Rect(20, 20, 420, 640);
     public bool lockCursorWhenHidden = false;
-
 
     // 내부 상태
     Vector2 _scroll;
+    GUIStyle _section;
 
-    // UI 입력 차단 관련
     public static bool InputBlockedByUI { get; private set; }
-    private static PcdGpuRendererUI _activeInstance;
 
     void Awake()
     {
         if (targetRenderer == null)
             targetRenderer = GetComponent<PcdGpuRenderer>();
-
-        if (streamingController == null)
-            streamingController = GetComponent<PcdStreamingController>();
-
-        // 활성 인스턴스 등록
-        _activeInstance = this;
-    }
-
-    void OnDestroy()
-    {
-        if (_activeInstance == this)
-            _activeInstance = null;
     }
 
     void Update()
@@ -48,30 +32,11 @@ public class PcdGpuRendererUI : MonoBehaviour
         if (Input.GetKeyDown(toggleKey))
             ToggleUI();
 
-        // UI 위에 마우스가 있는지 체크
-        UpdateInputBlocking();
-
-        // 포커스 잃은 뒤 마우스 락 해제 등 필요 시
         if (!showUI && lockCursorWhenHidden)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
-    }
-
-    void UpdateInputBlocking()
-    {
-        if (!showUI)
-        {
-            InputBlockedByUI = false;
-            return;
-        }
-
-        Vector3 mousePos = Input.mousePosition;
-        // Unity GUI 좌표계는 화면 좌상단이 (0,0)이므로 변환
-        Vector2 guiMousePos = new Vector2(mousePos.x, Screen.height - mousePos.y);
-
-        InputBlockedByUI = windowRect.Contains(guiMousePos);
     }
 
     public void ToggleUI()
@@ -82,378 +47,336 @@ public class PcdGpuRendererUI : MonoBehaviour
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
+        else
+        {
+            InputBlockedByUI = false;
+        }
     }
 
     void OnGUI()
     {
-        if (!showUI) return;
+        if (!showUI)
+        {
+            InputBlockedByUI = false;
+            return;
+        }
 
-        // 화면 해상도에 비례하여 최소 크기 보정
+        if (_section == null)
+        {
+            _section = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+        }
+
         var minW = Mathf.Min(Screen.width - 40, Mathf.Max(380, (int)windowRect.width));
-        var minH = Mathf.Min(Screen.height - 40, Mathf.Max(600, (int)windowRect.height));
+        var minH = Mathf.Min(Screen.height - 40, Mathf.Max(360, (int)windowRect.height));
         windowRect.width = minW;
         windowRect.height = minH;
 
         GUI.color = Color.white;
-        windowRect = GUI.Window(windowId, windowRect, DrawWindow, windowTitle);
-    }
+        bool mouseInWindowRough = windowRect.Contains(GetMousePosGUI());
 
-    // ... 나머지 기존 코드는 동일 ...
+        windowRect = GUI.Window(windowId, windowRect, DrawWindow, windowTitle);
+
+        // 창 그린 후 최종 입력 차단 판정
+        bool block = mouseInWindowRough || windowRect.Contains(GetMousePosGUI());
+        InputBlockedByUI = block;
+    }
+    static Vector2 GetMousePosGUI()
+    {
+        Vector2 m = Input.mousePosition;
+        m.y = Screen.height - m.y;
+        return m;
+    }
 
     void DrawWindow(int id)
     {
-        if (targetRenderer == null)
-        {
-            GUILayout.Label("No PcdGpuRenderer bound.");
-            if (GUILayout.Button("Find on this GameObject"))
-                targetRenderer = GetComponent<PcdGpuRenderer>();
-            if (GUI.Button(new Rect(windowRect.width - 24, 4, 20, 20), "×"))
-            {
-                showUI = false;
-            }
-            GUI.DragWindow(new Rect(0, 0, 10000, 22));
-            return;
-        }
-
-        // 상단 Close 버튼
         if (GUI.Button(new Rect(windowRect.width - 24, 4, 20, 20), "×"))
         {
             showUI = false;
+            InputBlockedByUI = false;
         }
 
         GUILayout.Space(4);
         _scroll = GUILayout.BeginScrollView(_scroll);
 
-        // Render Settings Section
-        DrawSectionHeader("Render Settings");
+        // 바인딩 체크
+        DrawBindingHelpers();
 
-        // Material
-        var mat = EditorLikeObjectField("Point Material", targetRenderer.pointMaterial);
-        if (mat != targetRenderer.pointMaterial)
+        if (targetRenderer != null)
         {
-            targetRenderer.pointMaterial = mat;
+            DrawRendererSection();
         }
 
-        float sizePx = EditorLikeSlider("Point Size (px)", targetRenderer.pointSize, 0.5f, 64f);
-        if (!Mathf.Approximately(sizePx, targetRenderer.pointSize)) targetRenderer.pointSize = sizePx;
-
-        // Use Colors toggle
-        bool useCol = EditorLikeToggle("Use Colors", targetRenderer.useColors);
-        if (useCol != targetRenderer.useColors) targetRenderer.useColors = useCol;
-
-        // Soft Edge
-        float soft = EditorLikeSlider("Soft Edge", targetRenderer.softEdge, 0f, 1f);
-        if (!Mathf.Approximately(soft, targetRenderer.softEdge)) targetRenderer.softEdge = soft;
-
-        // Round Mask
-        bool round = EditorLikeToggle("Round Mask", targetRenderer.roundMask);
-        if (round != targetRenderer.roundMask) targetRenderer.roundMask = round;
-
-        // Kernel Settings Section  
-        GUILayout.Space(8);
-        DrawSectionHeader("Kernel Settings");
-
-        // Kernel Sharpness
-        float kernelSharpness = EditorLikeSlider("Kernel Sharpness",
-            targetRenderer.kernelSharpness, 0.5f, 3f);
-        if (!Mathf.Approximately(kernelSharpness, targetRenderer.kernelSharpness))
-            targetRenderer.kernelSharpness = kernelSharpness;
-
-        // Gaussian Kernel
-        bool gaussian = EditorLikeToggle("Gaussian Kernel", targetRenderer.gaussianKernel);
-        if (gaussian != targetRenderer.gaussianKernel)
-            targetRenderer.gaussianKernel = gaussian;
-
-        // Streaming Controller Section
-        if (streamingController != null)
+        if (renderFeature != null)
         {
-            GUILayout.Space(8);
-            DrawSectionHeader("Streaming Settings");
-
-            // Point Budget
-            int pointBudget = EditorLikeIntSlider("Point Budget", streamingController.pointBudget, 100_000, 10_000_000);
-            if (pointBudget != streamingController.pointBudget)
-                streamingController.pointBudget = pointBudget;
-
-            // Screen Error Target
-            float screenError = EditorLikeSlider("Screen Error Target",
-                streamingController.screenErrorTarget, 0.5f, 10f);
-            if (!Mathf.Approximately(screenError, streamingController.screenErrorTarget))
-                streamingController.screenErrorTarget = screenError;
-
-            // Max Loads Per Frame
-            int maxLoads = EditorLikeIntSlider("Max Loads/Frame",
-                streamingController.maxLoadsPerFrame, 1, 10);
-            if (maxLoads != streamingController.maxLoadsPerFrame)
-                streamingController.maxLoadsPerFrame = maxLoads;
-
-            // Max Unloads Per Frame
-            int maxUnloads = EditorLikeIntSlider("Max Unloads/Frame",
-                streamingController.maxUnloadsPerFrame, 1, 10);
-            if (maxUnloads != streamingController.maxUnloadsPerFrame)
-                streamingController.maxUnloadsPerFrame = maxUnloads;
-
-            // Color Classification Section
-            GUILayout.Space(8);
-            DrawSectionHeader("Color Classification");
-
-            // Enable Runtime Color Classification
-            bool enableColorClass = EditorLikeToggle("Enable Runtime Classification",
-                streamingController.enableRuntimeColorClassification);
-            if (enableColorClass != streamingController.enableRuntimeColorClassification)
-                streamingController.enableRuntimeColorClassification = enableColorClass;
-
-            // RuntimePointClassifier Settings
-            if (streamingController.colorClassifier != null && streamingController.enableRuntimeColorClassification)
-            {
-                var classifier = streamingController.colorClassifier;
-
-                // settings 접근이 가능한지 체크
-                if (HasSettingsProperty(classifier))
-                {
-                    DrawClassifierSettings(classifier);
-                }
-            }
+            DrawRenderFeatureSection();
         }
 
-        // Stats Section
-        GUILayout.Space(8);
-        DrawSectionHeader("Statistics");
-        GUILayout.Label($"Active Nodes: {targetRenderer.activeNodeCount}");
-        GUILayout.Label($"Total Points: {targetRenderer.totalPointCount}");
+        DrawShaderMaterialSection();
 
-        if (streamingController != null)
-        {
-            GUILayout.Label($"Active Points: {streamingController.activePoints}");
-            GUILayout.Label($"Inflight Loads: {streamingController.inflightLoads}");
-        }
+        DrawStatsSection();
 
-        // Actions Section
-        GUILayout.Space(8);
-        DrawSectionHeader("Actions");
-        if (GUILayout.Button("Rebuild Draw Order"))
-        {
-            var ids = targetRenderer.GetActiveNodeIds();
-            targetRenderer.SetDrawOrder((System.Collections.Generic.IList<int>)ids);
-        }
+        DrawWindowOptions();
 
-        // Window Settings Section
-        GUILayout.Space(8);
-        DrawSectionHeader("Window Settings");
-        toggleKey = (KeyCode)EditorLikeEnumPopup("Toggle Key", toggleKey);
-        lockCursorWhenHidden = EditorLikeToggle("Unlock Cursor When Hidden", lockCursorWhenHidden);
-
-        GUILayout.Space(10);
         GUILayout.EndScrollView();
 
         GUI.DragWindow(new Rect(0, 0, 10000, 22));
     }
 
-    // Classifier가 settings 프로퍼티를 가지고 있는지 체크
-    bool HasSettingsProperty(RuntimePointClassifier classifier)
+    void DrawBindingHelpers()
     {
-        var type = classifier.GetType();
-        return type.GetProperty("settings") != null || type.GetField("settings") != null;
-    }
+        GUILayout.Label("Bindings", _section);
+        GUILayout.BeginVertical("box");
 
-    // Classifier 설정 UI 그리기
-    void DrawClassifierSettings(RuntimePointClassifier classifier)
-    {
-        try
-        {
-            // 리플렉션을 사용해 settings에 접근
-            var type = classifier.GetType();
-            var settingsField = type.GetField("settings");
-            var settingsProperty = type.GetProperty("settings");
-
-            object settings = null;
-            if (settingsField != null)
-                settings = settingsField.GetValue(classifier);
-            else if (settingsProperty != null)
-                settings = settingsProperty.GetValue(classifier);
-
-            if (settings != null)
-            {
-                GUILayout.Space(4);
-                GUILayout.Label("Classification Parameters", EditorStyles.miniBoldLabel);
-
-                // settings의 각 필드를 체크하고 UI로 표시
-                var settingsType = settings.GetType();
-
-                // Surface Threshold
-                DrawFloatField(settings, settingsType, "surfaceThreshold", "Surface Threshold", 0.01f, 0.1f);
-
-                // Normal Smooth Radius
-                DrawFloatField(settings, settingsType, "normalSmoothRadius", "Normal Smooth Radius", 0.05f, 0.5f);
-
-                // K Neighbors
-                DrawIntField(settings, settingsType, "kNeighbors", "K Neighbors", 4, 16);
-
-                GUILayout.Space(4);
-                GUILayout.Label("Color Enhancement", EditorStyles.miniBoldLabel);
-
-                // Contrast Boost
-                DrawFloatField(settings, settingsType, "contrastBoost", "Contrast Boost", 0.5f, 2f);
-
-                // Saturation Boost
-                DrawFloatField(settings, settingsType, "saturationBoost", "Saturation Boost", 0.5f, 2f);
-
-                // Enable Outlier Removal
-                DrawBoolField(settings, settingsType, "enableOutlierRemoval", "Enable Outlier Removal");
-
-                // settings를 다시 할당
-                if (settingsField != null)
-                    settingsField.SetValue(classifier, settings);
-                else if (settingsProperty != null)
-                    settingsProperty.SetValue(classifier, settings);
-            }
-
-            // Use Job System
-            DrawClassifierBoolField(classifier, "useJobSystem", "Use Job System");
-
-            GUILayout.Space(4);
-            GUILayout.Label("Color Mapping", EditorStyles.miniBoldLabel);
-
-            // Color mapping display (read-only)
-            DrawClassifierColorField(classifier, "interiorColor", "Interior Color");
-            DrawClassifierColorField(classifier, "exteriorColor", "Exterior Color");
-            DrawClassifierColorField(classifier, "boundaryColor", "Boundary Color");
-            DrawClassifierColorField(classifier, "unknownColor", "Unknown Color");
-        }
-        catch (System.Exception e)
-        {
-            GUILayout.Label($"Settings unavailable: {e.Message}");
-        }
-    }
-
-    void DrawFloatField(object settings, System.Type settingsType, string fieldName, string displayName, float min, float max)
-    {
-        try
-        {
-            var field = settingsType.GetField(fieldName);
-            if (field != null && field.FieldType == typeof(float))
-            {
-                float value = (float)field.GetValue(settings);
-                float newValue = EditorLikeSlider(displayName, value, min, max);
-                if (!Mathf.Approximately(value, newValue))
-                {
-                    field.SetValue(settings, newValue);
-                }
-            }
-        }
-        catch { }
-    }
-
-    void DrawIntField(object settings, System.Type settingsType, string fieldName, string displayName, int min, int max)
-    {
-        try
-        {
-            var field = settingsType.GetField(fieldName);
-            if (field != null && field.FieldType == typeof(int))
-            {
-                int value = (int)field.GetValue(settings);
-                int newValue = EditorLikeIntSlider(displayName, value, min, max);
-                if (value != newValue)
-                {
-                    field.SetValue(settings, newValue);
-                }
-            }
-        }
-        catch { }
-    }
-
-    void DrawBoolField(object settings, System.Type settingsType, string fieldName, string displayName)
-    {
-        try
-        {
-            var field = settingsType.GetField(fieldName);
-            if (field != null && field.FieldType == typeof(bool))
-            {
-                bool value = (bool)field.GetValue(settings);
-                bool newValue = EditorLikeToggle(displayName, value);
-                if (value != newValue)
-                {
-                    field.SetValue(settings, newValue);
-                }
-            }
-        }
-        catch { }
-    }
-
-    void DrawClassifierBoolField(RuntimePointClassifier classifier, string fieldName, string displayName)
-    {
-        try
-        {
-            var type = classifier.GetType();
-            var field = type.GetField(fieldName);
-            var property = type.GetProperty(fieldName);
-
-            if (field != null && field.FieldType == typeof(bool))
-            {
-                bool value = (bool)field.GetValue(classifier);
-                bool newValue = EditorLikeToggle(displayName, value);
-                if (value != newValue)
-                {
-                    field.SetValue(classifier, newValue);
-                }
-            }
-            else if (property != null && property.PropertyType == typeof(bool))
-            {
-                bool value = (bool)property.GetValue(classifier);
-                bool newValue = EditorLikeToggle(displayName, value);
-                if (value != newValue && property.CanWrite)
-                {
-                    property.SetValue(classifier, newValue);
-                }
-            }
-        }
-        catch { }
-    }
-
-    void DrawClassifierColorField(RuntimePointClassifier classifier, string fieldName, string displayName)
-    {
-        try
-        {
-            var type = classifier.GetType();
-            var field = type.GetField(fieldName);
-            var property = type.GetProperty(fieldName);
-
-            Color color = Color.white;
-
-            if (field != null && field.FieldType == typeof(Color))
-            {
-                color = (Color)field.GetValue(classifier);
-            }
-            else if (property != null && property.PropertyType == typeof(Color))
-            {
-                color = (Color)property.GetValue(classifier);
-            }
-
-            EditorLikeColorField(displayName, color);
-        }
-        catch { }
-    }
-
-    void DrawSectionHeader(string title)
-    {
-        GUILayout.Space(4);
-        GUILayout.Label(title, EditorStyles.boldLabel);
-        GUILayout.Space(2);
-    }
-
-    // ----- 경량 "Editor-like" 위젯들 (런타임에서도 동작) -----
-
-    Material EditorLikeObjectField(string label, Material current)
-    {
+        // Target Renderer
         GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-        string name = current != null ? current.name : "(None)";
-        GUILayout.Label(name, GUILayout.ExpandWidth(true));
+        GUILayout.Label("PcdGpuRenderer", GUILayout.Width(140));
+        GUILayout.Label(targetRenderer != null ? targetRenderer.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60)))
+        {
+            if (targetRenderer == null)
+                targetRenderer = GetComponent<PcdGpuRenderer>();
+            if (targetRenderer == null)
+                targetRenderer = FindObjectOfType<PcdGpuRenderer>(true);
+        }
         GUILayout.EndHorizontal();
-        return current;
+
+        // Render Feature
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Render Feature", GUILayout.Width(140));
+        GUILayout.Label(renderFeature != null ? renderFeature.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60)))
+        {
+            if (renderFeature == null)
+                renderFeature = FindObjectOfType<PcdBillboardRenderFeature>(true);
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
     }
 
-    bool EditorLikeToggle(string label, bool value)
+    void DrawRendererSection()
+    {
+        GUILayout.Label("Renderer", _section);
+        GUILayout.BeginVertical("box");
+
+        // Colors
+        bool useCol = ToggleRow("Use Colors", targetRenderer.useColors);
+        if (useCol != targetRenderer.useColors) targetRenderer.useColors = useCol;
+
+        // Point Size
+        float sizePx = SliderRow("Point Size (px)", targetRenderer.pointSize, 0.5f, 64f);
+        if (!Mathf.Approximately(sizePx, targetRenderer.pointSize)) targetRenderer.pointSize = sizePx;
+
+        // Kernel
+        float sharp = SliderRow("Kernel Sharpness", targetRenderer.kernelSharpness, 0.5f, 3f);
+        if (!Mathf.Approximately(sharp, targetRenderer.kernelSharpness)) targetRenderer.kernelSharpness = sharp;
+        bool gauss = ToggleRow("Gaussian Kernel", targetRenderer.gaussianKernel);
+        if (gauss != targetRenderer.gaussianKernel) targetRenderer.gaussianKernel = gauss;
+
+        // Depth front match
+        float eps = SliderRow("Depth Match Eps", targetRenderer.depthMatchEps, 1e-5f, 5e-1f);
+        if (!Mathf.Approximately(eps, targetRenderer.depthMatchEps)) targetRenderer.depthMatchEps = eps;
+
+        // LOD size policy
+        float minPx = SliderRow("Min Pixel Size", targetRenderer.minPixelSize, 0.25f, 8f);
+        if (!Mathf.Approximately(minPx, targetRenderer.minPixelSize)) targetRenderer.minPixelSize = minPx;
+        float maxPx = SliderRow("Max Pixel Size", targetRenderer.maxPixelSize, 4f, 128f);
+        if (!Mathf.Approximately(maxPx, targetRenderer.maxPixelSize)) targetRenderer.maxPixelSize = maxPx;
+        float sizeK = SliderRow("Size K", targetRenderer.sizeK, 0.25f, 4f);
+        if (!Mathf.Approximately(sizeK, targetRenderer.sizeK)) targetRenderer.sizeK = sizeK;
+
+        // Distance fades
+        float nearF = SliderRow("Distance Fade Near", targetRenderer.distanceFadeNear, 0.1f, 200f);
+        if (!Mathf.Approximately(nearF, targetRenderer.distanceFadeNear)) targetRenderer.distanceFadeNear = nearF;
+        float farF = SliderRow("Distance Fade Far", targetRenderer.distanceFadeFar, 1f, 2000f);
+        if (!Mathf.Approximately(farF, targetRenderer.distanceFadeFar)) targetRenderer.distanceFadeFar = farF;
+        float parentFade = SliderRow("Parent Fade Base", targetRenderer.parentFadeBase, 0.4f, 1.0f);
+        if (!Mathf.Approximately(parentFade, targetRenderer.parentFadeBase)) targetRenderer.parentFadeBase = parentFade;
+
+        // Material-level LOD tint (node level feed)
+        int maxDepthForMat = (int)SliderRow("Max Depth (Material)", targetRenderer.maxDepthForMaterial, 1f, 12f);
+        if (maxDepthForMat != targetRenderer.maxDepthForMaterial) targetRenderer.maxDepthForMaterial = maxDepthForMat;
+
+        GUILayout.Space(4);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Rebuild Draw Order"))
+        {
+            var ids = targetRenderer.GetActiveNodeIds();
+            targetRenderer.SetDrawOrder((System.Collections.Generic.IList<int>)ids);
+        }
+        if (GUILayout.Button("Clear All Nodes"))
+        {
+            targetRenderer.ClearAllNodes();
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawRenderFeatureSection()
+    {
+        GUILayout.Label("URP Feature (EDL/Accum)", _section);
+        GUILayout.BeginVertical("box");
+
+        var s = renderFeature.settings;
+
+        // Point Budget + SSE in feature’s DepthProxy LOD aggregation
+        int budget = (int)SliderRow("Point Budget", s.pointBudget, 100000f, 20000000f);
+        if (budget != s.pointBudget) s.pointBudget = budget;
+        float sse = SliderRow("SSE Threshold", s.sseThreshold, 0.25f, 4f);
+        if (!Mathf.Approximately(sse, s.sseThreshold)) s.sseThreshold = sse;
+        float hyst = SliderRow("SSE Hysteresis", s.sseHysteresis, 0.0f, 0.5f);
+        if (!Mathf.Approximately(hyst, s.sseHysteresis)) s.sseHysteresis = hyst;
+
+        // Accum RT format
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Accum Format", GUILayout.Width(140));
+        var fmt = (RenderTextureFormat)EnumPopup((System.Enum)s.accumFormat);
+        if (fmt != s.accumFormat) s.accumFormat = fmt;
+        GUILayout.EndHorizontal();
+
+        // EDL params
+        if (s.edlSettings != null)
+        {
+            GUILayout.Space(4);
+            GUILayout.Label("EDL", _section);
+
+            bool hq = ToggleRow("High Quality", s.edlSettings.highQuality);
+            if (hq != s.edlSettings.highQuality) s.edlSettings.highQuality = hq;
+
+            float edlStrength = SliderRow("EDL Strength", s.edlSettings.edlStrength, 0f, 4f);
+            if (!Mathf.Approximately(edlStrength, s.edlSettings.edlStrength)) s.edlSettings.edlStrength = edlStrength;
+
+            float edlRadius = SliderRow("EDL Base Radius(px)", s.edlSettings.edlRadius, 0.5f, 16f);
+            if (!Mathf.Approximately(edlRadius, s.edlSettings.edlRadius)) s.edlSettings.edlRadius = edlRadius;
+
+            float brightBoost = SliderRow("Brightness Boost", s.edlSettings.brightnessBoost, 0.1f, 4f);
+            if (!Mathf.Approximately(brightBoost, s.edlSettings.brightnessBoost)) s.edlSettings.brightnessBoost = brightBoost;
+
+            // Downsample factor for EDL pass
+            int ds = (int)SliderRow("EDL Downsample", s.edlDownsample, 1f, 4f);
+            ds = Mathf.Clamp(ds, 1, 4);
+            if (ds != s.edlDownsample) s.edlDownsample = ds;
+
+            // Depth proxy format
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Depth RT Format", GUILayout.Width(140));
+            var depFmt = (RenderTextureFormat)EnumPopup((System.Enum)s.edlSettings.depthFormat);
+            if (depFmt != s.edlSettings.depthFormat) s.edlSettings.depthFormat = depFmt;
+            GUILayout.EndHorizontal();
+
+            // Depth match eps used by splat shaders (propagated through passes)
+            float matchEps = SliderRow("Depth Match Eps", s.edlSettings.depthMatchEps, 1e-5f, 5e-1f);
+            if (!Mathf.Approximately(matchEps, s.edlSettings.depthMatchEps)) s.edlSettings.depthMatchEps = matchEps;
+        }
+
+        // Radius scale by average px (global)
+        float radiusK = SliderRow("EDL Radius Scale K", s.edlRadiusScaleK, 0.0f, 4.0f);
+        if (!Mathf.Approximately(radiusK, s.edlRadiusScaleK)) s.edlRadiusScaleK = radiusK;
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawShaderMaterialSection()
+    {
+        if (targetRenderer == null) return;
+        var mat = targetRenderer.pointMaterial;
+        if (mat == null) return;
+
+        GUILayout.Label("Splat Shader (Material)", _section);
+        GUILayout.BeginVertical("box");
+
+        // Distance color controls (Custom/PcdSplatAccum properties)
+        bool useDist = ReadMaterialToggle(mat, "_UseDistanceColor", true);
+        bool newUseDist = ToggleRow("Use Distance Color", useDist);
+        if (newUseDist != useDist) mat.SetFloat("_UseDistanceColor", newUseDist ? 1f : 0f);
+
+        // Colors
+        Color nearCol = ReadMaterialColor(mat, "_NearColor", Color.white);
+        Color farCol = ReadMaterialColor(mat, "_FarColor", new Color(0.6f, 0.9f, 1f, 1f));
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Near Color", GUILayout.Width(140));
+        var newNear = RGBField(nearCol);
+        GUILayout.EndHorizontal();
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Far Color", GUILayout.Width(140));
+        var newFar = RGBField(farCol);
+        GUILayout.EndHorizontal();
+        if (newNear != nearCol) mat.SetColor("_NearColor", newNear);
+        if (newFar != farCol) mat.SetColor("_FarColor", newFar);
+
+        // Near/Far distances
+        float nearD = ReadMaterialFloat(mat, "_NearDist", 2f);
+        float farD = ReadMaterialFloat(mat, "_FarDist", 25f);
+        float newNearD = SliderRow("Near Distance", nearD, 0.01f, 100f);
+        float newFarD = SliderRow("Far Distance", farD, 0.02f, 1000f);
+        newFarD = Mathf.Max(newFarD, newNearD + 0.01f);
+        if (!Mathf.Approximately(newNearD, nearD)) mat.SetFloat("_NearDist", newNearD);
+        if (!Mathf.Approximately(newFarD, farD)) mat.SetFloat("_FarDist", newFarD);
+
+        // Mode enum (0=Replace,1=Multiply,2=Overlay)
+        float mode = ReadMaterialFloat(mat, "_DistMode", 0f);
+        int imode = (int)mode;
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Distance Color Mode", GUILayout.Width(140));
+        string[] modes = { "Replace", "Multiply", "Overlay" };
+        int newMode = GUILayout.SelectionGrid(Mathf.Clamp(imode, 0, 2), modes, 3);
+        GUILayout.EndHorizontal();
+        if (newMode != imode) mat.SetFloat("_DistMode", newMode);
+
+        // Kernel params also surfaced on material (mirror fields)
+        float kSharp = ReadMaterialFloat(mat, "_KernelSharpness", 1.5f);
+        float newSharp = SliderRow("Mat Kernel Sharpness", kSharp, 0.5f, 3f);
+        if (!Mathf.Approximately(newSharp, kSharp)) mat.SetFloat("_KernelSharpness", newSharp);
+
+        bool g = ReadMaterialToggle(mat, "_Gaussian", false);
+        bool newG = ToggleRow("Mat Gaussian Kernel", g);
+        if (newG != g) mat.SetFloat("_Gaussian", newG ? 1f : 0f);
+
+        // EDL influence from material (color attenuation strength)
+        float edlS = ReadMaterialFloat(mat, "_EdlStrength", 1.0f);
+        float newEdlS = SliderRow("Mat EDL Strength", edlS, 0f, 4f);
+        if (!Mathf.Approximately(newEdlS, edlS)) mat.SetFloat("_EdlStrength", newEdlS);
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawStatsSection()
+    {
+        if (targetRenderer == null) return;
+
+        GUILayout.Label("Stats", _section);
+        GUILayout.BeginVertical("box");
+        GUILayout.Label($"Active Nodes: {targetRenderer.activeNodeCount}");
+        GUILayout.Label($"Total Points: {targetRenderer.totalPointCount}");
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawWindowOptions()
+    {
+        GUILayout.Label("Window", _section);
+        GUILayout.BeginVertical("box");
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Toggle Key", GUILayout.Width(140));
+        GUILayout.Label(toggleKey.ToString(), GUILayout.Width(160));
+        GUILayout.FlexibleSpace();
+        GUILayout.EndHorizontal();
+
+        bool unlock = ToggleRow("Unlock Cursor When Hidden", lockCursorWhenHidden);
+        if (unlock != lockCursorWhenHidden) lockCursorWhenHidden = unlock;
+
+        GUILayout.EndVertical();
+    }
+
+    // ----- 위젯 유틸 -----
+
+    bool ToggleRow(string label, bool value)
     {
         GUILayout.BeginHorizontal();
         bool v = GUILayout.Toggle(value, label);
@@ -461,76 +384,52 @@ public class PcdGpuRendererUI : MonoBehaviour
         return v;
     }
 
-    float EditorLikeSlider(string label, float value, float min, float max)
+    float SliderRow(string label, float value, float min, float max)
     {
         GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-        GUILayout.Label(value.ToString("0.00"), GUILayout.Width(50));
-        GUILayout.FlexibleSpace();
+        GUILayout.Label(label, GUILayout.Width(160));
+        GUILayout.Label(value.ToString("0.###"), GUILayout.Width(60));
         GUILayout.EndHorizontal();
-
         float v = GUILayout.HorizontalSlider(value, min, max);
         return v;
     }
 
-    int EditorLikeIntSlider(string label, int value, int min, int max)
+    System.Enum EnumPopup(System.Enum value)
     {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-        GUILayout.Label(value.ToString(), GUILayout.Width(80));
-        GUILayout.FlexibleSpace();
-        GUILayout.EndHorizontal();
-
-        int v = Mathf.RoundToInt(GUILayout.HorizontalSlider(value, min, max));
-        return v;
-    }
-
-    void EditorLikeColorField(string label, Color color)
-    {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-
-        // 색상 표시용 작은 박스
-        var colorRect = GUILayoutUtility.GetRect(20, 16);
-        GUI.DrawTexture(colorRect, EditorGUIUtility.whiteTexture, ScaleMode.StretchToFill, true, 0, color, 0, 0);
-
-        GUILayout.Label($"({color.r:0.00}, {color.g:0.00}, {color.b:0.00})");
-        GUILayout.FlexibleSpace();
-        GUILayout.EndHorizontal();
-    }
-
-    System.Enum EditorLikeEnumPopup(string label, KeyCode value)
-    {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(140));
-        GUILayout.Label(value.ToString(), GUILayout.Width(160));
-        GUILayout.FlexibleSpace();
-        GUILayout.EndHorizontal();
+        // 런타임에 드롭다운을 간단히 표시: 현재값만 표시(선택은 생략)
+        GUILayout.Label(value.ToString(), GUILayout.ExpandWidth(true));
         return value;
     }
-}
 
-// EditorStyles와 EditorGUIUtility를 런타임에서 사용하기 위한 폴백
-public static class EditorStyles
-{
-    public static GUIStyle boldLabel = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
-    public static GUIStyle miniBoldLabel = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = 10 };
-}
-
-public static class EditorGUIUtility
-{
-    private static Texture2D _whiteTexture;
-    public static Texture2D whiteTexture
+    Color RGBField(Color c)
     {
-        get
-        {
-            if (_whiteTexture == null)
-            {
-                _whiteTexture = new Texture2D(1, 1);
-                _whiteTexture.SetPixel(0, 0, Color.white);
-                _whiteTexture.Apply();
-            }
-            return _whiteTexture;
-        }
+        // 간단 RGB 수치 슬라이더
+        GUILayout.BeginVertical();
+        float r = GUILayout.HorizontalSlider(c.r, 0f, 1f);
+        float g = GUILayout.HorizontalSlider(c.g, 0f, 1f);
+        float b = GUILayout.HorizontalSlider(c.b, 0f, 1f);
+        GUILayout.EndVertical();
+        return new Color(r, g, b, 1f);
     }
+
+    // ----- 머티리얼 파라미터 읽기 -----
+
+    static bool ReadMaterialToggle(Material m, string name, bool def = false)
+    {
+        if (m.HasProperty(name)) return m.GetFloat(name) > 0.5f;
+        return def;
+    }
+
+    static float ReadMaterialFloat(Material m, string name, float def = 0)
+    {
+        if (m.HasProperty(name)) return m.GetFloat(name);
+        return def;
+    }
+
+    static Color ReadMaterialColor(Material m, string name, Color def)
+    {
+        if (m.HasProperty(name)) return m.GetColor(name);
+        return def;
+    }
+
 }

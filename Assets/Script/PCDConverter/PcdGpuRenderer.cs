@@ -1,4 +1,4 @@
-using System;
+Ôªøusing System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -7,26 +7,34 @@ using UnityEngine.Rendering;
 public class PcdGpuRenderer : MonoBehaviour
 {
     [Header("Render")]
-    public Material pointMaterial;               // Custom/PcdBillboardIndirect ±‚π›
+    public Material pointMaterial;                // Shader "Custom/PcdSplatAccum"
     [Range(0.5f, 64.0f)]
-    public float pointSize = 4.0f;               // «»ºø ¥‹¿ß
+    public float pointSize = 4.0f;                // default px when no LOD meta is present
     public bool useColors = true;
-    [Range(0, 1)] public float softEdge = 0.1f;
-    public bool roundMask = true;
+
+    [Header("Gap fill / LOD size")]
+    public float minPixelSize = 1.25f;
+    public float maxPixelSize = 32.0f;
+    public float sizeK = 1.0f;                    // px = sizeK * spacing * projection
+    public float parentFadeBase = 0.7f;           // per-level fade (0.6~0.8)
+    public float distanceFadeNear = 5.0f;
+    public float distanceFadeFar = 200.0f;
+
+    [Header("Accum kernel")]
+    public float kernelSharpness = 1.5f;
+    public bool gaussianKernel = false;
+
+    [Header("EDL helper passes")]
+    [SerializeField] Material splatDepthProxyMaterial; // Shader "Custom/PcdSplatDepthProxy"
+    [SerializeField] Material splatColorLiteMaterial;  // Shader "Custom/PcdSplatColorLite"
+    [Range(1e-5f, 5e-1f)]
+    public float depthMatchEps = 0.001f;               // for ColorLite/Accum optional front-match
 
     [Header("Stats (overall)")]
     public int totalPointCount;
     public int activeNodeCount;
 
-    public enum PointSizeMode { Fixed, Attenuated, Adaptive }
-    [Header("Point Size")]
-    public PointSizeMode sizeMode = PointSizeMode.Fixed;
-    [Range(0.5f, 64f)] public float minPixelSize = 1.0f;
-    [Range(0.5f, 128f)] public float maxPixelSize = 8.0f;
-    [Range(0.01f, 10f)] public float attenuationScale = 1.0f;   // 1/d Ω∫ƒ…¿œ ∞Ëºˆ
-    [Range(0.0f, 16f)] public float adaptiveScale = 0.0f;        // Adaptive ∞°ªÍ
-
-    // ≥ÎµÂ πˆ∆€ ±∏¡∂
+    // Node GPU buffers
     class NodeBuffers
     {
         public ComputeBuffer pos;
@@ -39,14 +47,470 @@ public class PcdGpuRenderer : MonoBehaviour
     readonly Dictionary<int, NodeBuffers> _nodes = new();
     readonly List<int> _drawOrder = new();
 
-    // ∞¯¿Ø ƒıµÂ ∏ﬁΩ¨
+    // Shared unit quad
+    static Mesh s_quad;
+    static readonly uint[] s_argsTemplate = new uint[8];
+
+    // LOD meta (spacing, level)
+    readonly Dictionary<int, (float spacing, int level)> _nodeMeta = new();
+
+    // Point Budget LOD eval
+    struct NodeEval { public int id; public int count; public float sse; public float px; public float score; }
+
+    // Shader IDs
+    static readonly int ID_Positions = Shader.PropertyToID("_Positions");
+    static readonly int ID_Colors = Shader.PropertyToID("_Colors");
+    static readonly int ID_HasColor = Shader.PropertyToID("_HasColor");
+    static readonly int ID_PointSize = Shader.PropertyToID("_PointSize");
+    static readonly int ID_KernelSharpness = Shader.PropertyToID("_KernelSharpness");
+    static readonly int ID_Gaussian = Shader.PropertyToID("_Gaussian");
+    static readonly int ID_L2W = Shader.PropertyToID("_LocalToWorld");
+    static readonly int ID_HasSRGB = Shader.PropertyToID("_HasSRGB");
+    static readonly int ID_NodeFade = Shader.PropertyToID("_NodeFade");
+    static readonly int ID_DepthMatchEps = Shader.PropertyToID("_DepthMatchEps");
+    static readonly int ID_NodeLevel = Shader.PropertyToID("_NodeLevel");
+    static readonly int ID_MaxDepth = Shader.PropertyToID("_MaxDepth");
+    static readonly int ID_PcdDepthRT = Shader.PropertyToID("_PcdDepthRT");
+
+    // ===== Helpers =====
+    static bool IsMainThread()
+    {
+        try { var _ = Time.frameCount; return true; }
+        catch (UnityException) { return false; }
+    }
+
+    void EnsureQuad()
+    {
+        if (s_quad != null) return;
+        s_quad = new Mesh { name = "Pcd_UnitQuad" };
+        var verts = new Vector3[]
+        {
+            new Vector3(-0.5f, -0.5f, 0),
+            new Vector3( 0.5f, -0.5f, 0),
+            new Vector3(-0.5f,  0.5f, 0),
+            new Vector3( 0.5f,  0.5f, 0),
+        };
+        var idx = new int[] { 0, 1, 2, 2, 1, 3 };
+        s_quad.SetVertices(verts);
+        s_quad.SetIndices(idx, MeshTopology.Triangles, 0);
+        s_quad.UploadMeshData(true);
+    }
+
+    // pixels per meter at distance d
+    float ProjectPixelsPerWorld(Camera cam, float distance)
+    {
+        float H = Mathf.Max(1, cam.pixelHeight);
+        float P = H / (2.0f * Mathf.Tan(cam.fieldOfView * Mathf.Deg2Rad * 0.5f));
+        return P / Mathf.Max(distance, 1e-3f);
+    }
+
+    float ComputeNodeFade(int level, float distance)
+    {
+        float levelFade = Mathf.Pow(Mathf.Clamp01(parentFadeBase), Mathf.Max(0, level));
+        float t = Mathf.InverseLerp(distanceFadeFar, distanceFadeNear, distance); // far->near
+        float distFade = Mathf.Lerp(0.5f, 1.0f, Mathf.Clamp01(t));
+        return Mathf.Clamp01(levelFade * distFade);
+    }
+
+    public void SetNodeMeta(int nodeId, float spacing, int level) => _nodeMeta[nodeId] = (spacing, level);
+    float QueryNodeSpacing(int nodeId) => _nodeMeta.TryGetValue(nodeId, out var m) ? Mathf.Max(1e-6f, m.spacing) : 1.0f;
+    int QueryNodeLevel(int nodeId) => _nodeMeta.TryGetValue(nodeId, out var m) ? Mathf.Max(0, m.level) : 0;
+
+    // unified px for all passes
+    float GetNodePointSizePx(Camera cam, NodeBuffers nb, int nodeId)
+    {
+        float nodeSpacing = QueryNodeSpacing(nodeId);
+        Vector3 centerLS = (nb.bounds.size.sqrMagnitude > 0) ? nb.bounds.center : transform.position;
+        float distance = Vector3.Distance(cam.transform.position, transform.TransformPoint(centerLS));
+        float P = ProjectPixelsPerWorld(cam, Mathf.Max(distance, 1e-3f));
+        float px = Mathf.Clamp(sizeK * nodeSpacing * P, minPixelSize, maxPixelSize);
+        return px;
+    }
+
+    void BindNodeBuffersToMaterial(Material mat, NodeBuffers nb, bool hasColor)
+    {
+        mat.SetBuffer(ID_Positions, nb.pos);
+        if (useColors && hasColor && nb.col != null)
+        {
+            mat.SetBuffer(ID_Colors, nb.col);
+            mat.SetInt(ID_HasColor, 1);
+        }
+        else
+        {
+            mat.SetInt(ID_HasColor, 0);
+        }
+    }
+
+    void RecomputeStats()
+    {
+        int total = 0;
+        foreach (var nb in _nodes.Values) total += nb.count;
+        totalPointCount = total;
+        activeNodeCount = _nodes.Count;
+    }
+
+    public float UpdateLodAndBudget(Camera cam, int pointBudget, float sseThreshold, float hysteresis)
+    {
+        if (_drawOrder.Count == 0) return pointSize;
+        List<NodeEval> evals = new(_drawOrder.Count);
+        foreach (var nodeId in _drawOrder)
+        {
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            float px = GetNodePointSizePx(cam, nb, nodeId);           // ÌôîÎ©¥ÏÉÅ Ìè¨Ïù∏Ìä∏ px
+            float spacing = QueryNodeSpacing(nodeId);
+            float P = px / Mathf.Max(spacing * sizeK, 1e-6f);         // ProjectPixelsPerWorld Ïó≠ÏÇ∞
+            float sse = spacing * P;                                  // SSE ‚âà spacing*P
+                                                                      // SSEÍ∞Ä ÎÇÆÏùÑÏàòÎ°ù(ÌôîÎ©¥ Í∏∞Ïó¨Í∞Ä ÏûëÏùÑÏàòÎ°ù) Ïö∞ÏÑ†ÏàúÏúÑ ÎÇÆÏùå
+            float score = (sse >= sseThreshold) ? (sse) : (sse * 0.25f);
+            evals.Add(new NodeEval { id = nodeId, count = nb.count, sse = sse, px = px, score = score });
+        }
+        // Í∑ºÏÇ¨ Ïö∞ÏÑ†ÏàúÏúÑ: score*countÍ∞Ä ÌÅ∞ ÎÖ∏ÎìúÎ•º Î®ºÏ†Ä(ÌôîÎ©¥ Í∏∞Ïó¨/Î∞ÄÎèÑ Í∞ÄÏ§ë)
+        evals.Sort((a, b) => (b.score * b.count).CompareTo(a.score * a.count));
+
+        _drawOrder.Clear();
+        int accu = 0;
+        double sumPx = 0; int sumN = 0;
+        foreach (var e in evals)
+        {
+            // ÌûàÏä§ÌÖåÎ¶¨ÏãúÏä§: SSEÍ∞Ä ÏûÑÍ≥ÑÎ≥¥Îã§ ÏïΩÍ∞Ñ ÏûëÏïÑÎèÑ Ïú†ÏßÄ
+            bool pass = (e.sse >= sseThreshold * (1.0f - hysteresis)) || accu == 0;
+            if (!pass) continue;
+            if (accu + e.count > pointBudget) break;
+            _drawOrder.Add(e.id);
+            accu += e.count;
+            sumPx += e.px * e.count;
+            sumN += e.count;
+        }
+        if (sumN == 0) { RecomputeStats(); return pointSize; }
+        RecomputeStats();
+        return (float)(sumPx / sumN); // Í∞ÄÏ§ë ÌèâÍ∑† px
+    }
+
+    // ÌèâÍ∑† Ìè¨Ïù∏Ìä∏ ÌÅ¨Í∏∞Îßå ÌïÑÏöîÌï† Îïå
+    public float ComputeAveragePointPx(Camera cam, int maxNodesSample = 16)
+    {
+        if (_drawOrder.Count == 0) return pointSize;
+        double sum = 0; int n = 0;
+        for (int i = 0; i < _drawOrder.Count && i < maxNodesSample; ++i)
+        {
+            int id = _drawOrder[i];
+            if (!_nodes.TryGetValue(id, out var nb)) continue;
+            sum += GetNodePointSizePx(cam, nb, id);
+            n++;
+        }
+        return (n > 0) ? (float)(sum / n) : pointSize;
+    }
+
+    // ===== External API =====
+    public void AddOrUpdateNode(int nodeId, Vector3[] positions, Color32[] colors, Bounds nodeBounds = default)
+    {
+        if (!IsMainThread())
+        {
+            Debug.LogError("[PcdGpuRenderer] AddOrUpdateNode must be called on main thread.");
+            throw new UnityException("AddOrUpdateNode called off main thread");
+        }
+        if (positions == null || positions.Length == 0)
+            throw new ArgumentException("positions is null/empty");
+
+        RemoveNode(nodeId);
+
+        var nb = new NodeBuffers { count = positions.Length, bounds = nodeBounds };
+
+        nb.pos = new ComputeBuffer(nb.count, sizeof(float) * 3, ComputeBufferType.Structured);
+        nb.pos.SetData(positions);
+
+        if (useColors && colors != null && colors.Length == nb.count)
+        {
+            var packed = new uint[nb.count];
+            for (int i = 0; i < nb.count; i++)
+            {
+                var c = colors[i];
+                packed[i] = 0xFF000000u | ((uint)c.r << 16) | ((uint)c.g << 8) | (uint)c.b; // 0xAARRGGBB
+            }
+            nb.col = new ComputeBuffer(nb.count, sizeof(uint), ComputeBufferType.Structured);
+            nb.col.SetData(packed);
+        }
+
+        EnsureQuad();
+        uint indexCount = (uint)s_quad.GetIndexCount(0);
+
+        // ÏïàÏ†ÑÌïú Î∞©Ïãù: ÏöîÏÜå 5Í∞ú, stride 4
+        nb.args = new ComputeBuffer(5, sizeof(uint), ComputeBufferType.IndirectArguments);
+
+        uint[] args = new uint[5];
+        args[0] = indexCount;
+        args[1] = (uint)nb.count;
+        args[2] = 0;
+        args[3] = 0;
+        args[4] = 0;
+
+        nb.args.SetData(args);
+
+        _nodes[nodeId] = nb;
+        _drawOrder.Add(nodeId);
+        RecomputeStats();
+    }
+
+    public void RemoveNode(int nodeId)
+    {
+        if (_nodes.TryGetValue(nodeId, out var nb))
+        {
+            if (nb.pos != null) { nb.pos.Release(); nb.pos = null; }
+            if (nb.col != null) { nb.col.Release(); nb.col = null; }
+            if (nb.args != null) { nb.args.Release(); nb.args = null; }
+            _nodes.Remove(nodeId);
+            _drawOrder.Remove(nodeId);
+            RecomputeStats();
+        }
+    }
+
+    public void ClearAllNodes()
+    {
+        foreach (var kv in _nodes)
+        {
+            var nb = kv.Value;
+            if (nb.pos != null) { nb.pos.Release(); nb.pos = null; }
+            if (nb.col != null) { nb.col.Release(); nb.col = null; }
+            if (nb.args != null) { nb.args.Release(); nb.args = null; }
+        }
+        _nodes.Clear();
+        _drawOrder.Clear();
+        RecomputeStats();
+    }
+
+    public void SetDrawOrder(IList<int> nodeIdsInOrder)
+    {
+        _drawOrder.Clear();
+        if (nodeIdsInOrder != null) _drawOrder.AddRange(nodeIdsInOrder);
+    }
+
+    public IReadOnlyList<int> GetActiveNodeIds() => _drawOrder;
+
+    public void DisposeRenderer() => ClearAllNodes();
+
+    void OnEnable()
+    {
+        var sys = PcdBillboardRenderSystem.Instance;
+        if (sys != null) sys.Register(this);
+    }
+
+    void OnDisable()
+    {
+        var sys = PcdBillboardRenderSystem.Instance;
+        if (sys != null) sys.Unregister(this);
+        ClearAllNodes();
+    }
+
+    void OnDestroy() => ClearAllNodes();
+
+
+
+    // ===== Passes =====
+
+    // Front-only color (optional helper for EDL debug or pre-mask)
+    public void RenderSplatColorLite(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+
+        if (splatColorLiteMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatColorLite");
+            if (sh == null) return;
+            splatColorLiteMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        splatColorLiteMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+        splatColorLiteMaterial.SetFloat(ID_HasSRGB, 1.0f);
+        splatColorLiteMaterial.SetFloat(ID_DepthMatchEps, depthMatchEps); // shader uses _PcdDepthRT globally
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+            splatColorLiteMaterial.SetFloat(ID_PointSize, px);
+
+            BindNodeBuffersToMaterial(splatColorLiteMaterial, nb, nb.col != null);
+
+            cmd.DrawMeshInstancedIndirect(
+                s_quad, 0, splatColorLiteMaterial, 0, nb.args, 0, null
+            );
+        }
+    }
+
+    // Accumulation for MRT (front-only if shader samples _PcdDepthRT)
+    /*public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+
+        if (pointMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatAccum");
+            if (sh == null) return;
+            pointMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        pointMaterial.SetFloat(ID_KernelSharpness, kernelSharpness);
+        pointMaterial.SetFloat(ID_Gaussian, gaussianKernel ? 1f : 0f);
+        pointMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+
+        // If DepthProxyPass set global _PcdDepthRT, shader can sample it directly.
+        pointMaterial.SetFloat(ID_DepthMatchEps, depthMatchEps); // used only if shader implements front-match
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            // derive consistent px
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+
+            // node fade (overlay and distance)
+            Vector3 centerLS = (nb.bounds.size.sqrMagnitude > 0) ? nb.bounds.center : transform.position;
+            float distance = Vector3.Distance(cam.transform.position, transform.TransformPoint(centerLS));
+            float nodeFade = ComputeNodeFade(QueryNodeLevel(nodeId), distance);
+
+            BindNodeBuffersToMaterial(pointMaterial, nb, nb.col != null);
+            pointMaterial.SetFloat(ID_PointSize, px);
+            pointMaterial.SetFloat(ID_NodeFade, nodeFade);
+
+            cmd.DrawMeshInstancedIndirect(
+                s_quad, 0, pointMaterial, 0, nb.args, 0, null
+            );
+        }
+    }*/
+
+    public int maxDepthForMaterial = 8; // Ïù∏Ïä§ÌéôÌÑ∞ ÎÖ∏Ï∂úÌï¥ÎèÑ Îê®
+    public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+        if (pointMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatAccum");
+            if (sh == null) return;
+            pointMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        pointMaterial.SetFloat(ID_KernelSharpness, kernelSharpness);
+        pointMaterial.SetFloat(ID_Gaussian, gaussianKernel ? 1f : 0f);
+        pointMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+        pointMaterial.SetFloat(ID_DepthMatchEps, depthMatchEps);
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+
+            Vector3 centerLS = (nb.bounds.size.sqrMagnitude > 0) ? nb.bounds.center : transform.position;
+            float distance = Vector3.Distance(cam.transform.position, transform.TransformPoint(centerLS));
+            float nodeFade = ComputeNodeFade(QueryNodeLevel(nodeId), distance);
+
+            int level = QueryNodeLevel(nodeId);
+
+            BindNodeBuffersToMaterial(pointMaterial, nb, nb.col != null);
+            pointMaterial.SetFloat(ID_PointSize, px);
+            pointMaterial.SetFloat(ID_NodeFade, nodeFade);
+            pointMaterial.SetFloat(ID_NodeLevel, (float)level);
+            pointMaterial.SetFloat(ID_MaxDepth, (float)maxDepthForMaterial);
+
+            cmd.DrawMeshInstancedIndirect(s_quad, 0, pointMaterial, 0, nb.args, 0, null);
+        }
+    }
+
+    // Depth proxy for front visibility (invDepth accumulation)
+    public void RenderSplatDepthProxy(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+
+        if (splatDepthProxyMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatDepthProxy");
+            if (sh == null) return;
+            splatDepthProxyMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        splatDepthProxyMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+            splatDepthProxyMaterial.SetFloat(ID_PointSize, px);
+
+            // depth proxy uses only positions
+            splatDepthProxyMaterial.SetBuffer(ID_Positions, nb.pos);
+
+            cmd.DrawMeshInstancedIndirect(
+                s_quad, 0, splatDepthProxyMaterial, 0, nb.args, 0, null
+            );
+        }
+    }
+}
+
+
+/*using System;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+[ExecuteAlways]
+public class PcdGpuRenderer : MonoBehaviour
+{
+    [Header("Render")]
+    public Material pointMaterial;               // Custom/PcdBillboardIndirect Í∏∞Î∞ò
+    [Range(0.5f, 64.0f)]
+    public float pointSize = 4.0f;               // ÌîΩÏÖÄ Îã®ÏúÑ
+    public bool useColors = true;
+
+    [Header("Gap fill")]
+    public float minPixelSize = 1.25f; // override/align with existing field
+    public float maxPixelSize = 32.0f;
+    public float sizeK = 1.0f;         // scale factor for pixel size from spacing
+    public float parentFadeBase = 0.7f; // parent fade per level (0.6~0.8)
+    public float distanceFadeNear = 5.0f;
+    public float distanceFadeFar = 200.0f;
+
+    [Header("EDL")]
+    [SerializeField] Material splatDepthProxyMaterial; // Shader "Custom/PcdSplatDepthProxy"
+    [SerializeField] Material splatColorLiteMaterial; // Shader "Custom/PcdSplatColorLite"
+
+    [Header("Stats (overall)")]
+    public int totalPointCount;
+    public int activeNodeCount;
+
+    // ÎÖ∏Îìú Î≤ÑÌçº Íµ¨Ï°∞
+    class NodeBuffers
+    {
+        public ComputeBuffer pos;
+        public ComputeBuffer col;
+        public ComputeBuffer args; // indirect args
+        public int count;
+        public Bounds bounds;
+    }
+
+    readonly Dictionary<int, NodeBuffers> _nodes = new();
+    readonly List<int> _drawOrder = new();
+
+    // Í≥µÏú† ÏøºÎìú Î©îÏâ¨
     static Mesh s_quad;
     static readonly uint[] s_argsTemplate = new uint[5]; // indexCountPerInstance, instanceCount, startIndex, baseVertex, startInstance
 
     // Fade
-    readonly Dictionary<int, (float fade, int mode)> _nodeFades = new();
-    static readonly int ID_LodFade = Shader.PropertyToID("_LodFade");
-    static readonly int ID_DitherFade = Shader.PropertyToID("_DitherFade"); // 0/1
+    readonly Dictionary<int, (float spacing, int level)> _nodeMeta = new();
+    static readonly int ID_NodeFade = Shader.PropertyToID("_NodeFade");
 
     // splatAccum
     // [SerializeField] Material pointMaterial; // Shader "Custom/PcdSplatAccum"
@@ -59,8 +523,59 @@ public class PcdGpuRenderer : MonoBehaviour
     static readonly int ID_KernelSharpness = Shader.PropertyToID("_KernelSharpness");
     static readonly int ID_Gaussian = Shader.PropertyToID("_Gaussian");
     static readonly int ID_L2W = Shader.PropertyToID("_LocalToWorld");
+    static readonly int ID_HasSRGB = Shader.PropertyToID("_HasSRGB");
 
-    // ∏ﬁ¿ŒΩ∫∑πµÂ √º≈©
+    // helper: approximate pixel-per-world projection factor at distance d
+    float ProjectPixelsPerWorld(Camera cam, float distance)
+    {
+        // P = H / (2 * tan(fov/2)) / d
+        float H = Mathf.Max(1, cam.pixelHeight);
+        float P = H / (2.0f * Mathf.Tan(cam.fieldOfView * Mathf.Deg2Rad * 0.5f));
+        return P / Mathf.Max(distance, 1e-3f);
+    }
+
+    // compute node fade factoring parent overlay and distance
+    float ComputeNodeFade(int level, float distance)
+    {
+        float levelFade = Mathf.Pow(Mathf.Clamp01(parentFadeBase), Mathf.Max(0, level));
+        float t = Mathf.InverseLerp(distanceFadeFar, distanceFadeNear, distance); // far->near
+        float distFade = Mathf.Lerp(0.5f, 1.0f, Mathf.Clamp01(t));
+        return Mathf.Clamp01(levelFade * distFade);
+    }
+
+    // ========== Í≥µÌÜµ px Í≥ÑÏÇ∞Í∏∞ ==========
+    float GetNodePointSizePx(Camera cam, NodeBuffers nb, int nodeId)
+    {
+        // 1) Ïô∏Î∂ÄÏóêÏÑú Ï£ºÏûÖÌïú spacing/level Ï°∞Ìöå(ÏóÜÏúºÎ©¥ Í∏∞Î≥∏Í∞í) - Í∏∞Ï°¥ Ìó¨Ìçº ÏÇ¨Ïö©
+        float nodeSpacing = QueryNodeSpacing(nodeId);
+        int nodeLevel = QueryNodeLevel(nodeId);
+
+        // 2) ÎÖ∏Îìú Ï§ëÏã¨ÍπåÏßÄÏùò Í±∞Î¶¨(ÏõîÎìú‚ÜíÏπ¥Î©îÎùº) Í∑ºÏÇ¨
+        Vector3 centerLS = (nb.bounds.size.sqrMagnitude > 0) ? nb.bounds.center : transform.position;
+        float distance = Vector3.Distance(cam.transform.position, transform.TransformPoint(centerLS));
+
+        // 3) ÌôîÎ©¥ ÌîΩÏÖÄ/ÏõîÎìú Îã®ÏúÑ Ìà¨ÏòÅ Í≥ÑÏàòÎ°úÎ∂ÄÌÑ∞ px ÏÇ∞Ï∂ú(Îπà Ìãà Î∞©ÏßÄÏö© ÌÅ¥Îû®ÌîÑ Ìè¨Ìï®)
+        float P = ProjectPixelsPerWorld(cam, Mathf.Max(distance, 1e-3f)); // px per 1m @ distance
+        float px = Mathf.Clamp(sizeK * nodeSpacing * P, minPixelSize, maxPixelSize);
+        return px;
+    }
+
+    // Í≥µÌÜµ: Î®∏Ìã∞Î¶¨ÏñºÏóê Ìè¨ÏßÄÏÖò/Ïª¨Îü¨ Î∞îÏù∏Îî©(ÏûàÏùÑ Îïå) - ÏÑ†ÌÉù Ïú†Ìã∏
+    void BindNodeBuffersToMaterial(Material mat, NodeBuffers nb, bool hasColor)
+    {
+        mat.SetBuffer(ID_Positions, nb.pos);
+        if (useColors && hasColor && nb.col != null)
+        {
+            mat.SetBuffer(ID_Colors, nb.col);
+            mat.SetInt(ID_HasColor, 1);
+        }
+        else
+        {
+            mat.SetInt(ID_HasColor, 0);
+        }
+    }
+
+    // Î©îÏù∏Ïä§Î†àÎìú Ï≤¥ÌÅ¨
     static bool IsMainThread()
     {
         try { var _ = Time.frameCount; return true; }
@@ -85,14 +600,23 @@ public class PcdGpuRenderer : MonoBehaviour
     }
 
     // Fade mode
-    public void SetPerNodeLodFade(IList<(int nodeId, float fade, int mode)> items)
+    public void SetNodeMeta(int nodeId, float spacing, int level)
     {
-        _nodeFades.Clear();
-        if (items == null) return;
-        for (int i = 0; i < items.Count; i++) _nodeFades[items[i].nodeId] = (items[i].fade, items[i].mode);
+        _nodeMeta[nodeId] = (spacing, level);
     }
 
-    // ====== ø‹∫Œ API ======
+    float QueryNodeSpacing(int nodeId)
+    {
+        if (_nodeMeta.TryGetValue(nodeId, out var m)) return Mathf.Max(1e-6f, m.spacing);
+        return 1.0f;
+    }
+    int QueryNodeLevel(int nodeId)
+    {
+        if (_nodeMeta.TryGetValue(nodeId, out var m)) return Mathf.Max(0, m.level);
+        return 0;
+    }
+
+    // ====== Ïô∏Î∂Ä API ======
 
     public void AddOrUpdateNode(int nodeId, Vector3[] positions, Color32[] colors, Bounds nodeBounds = default)
     {
@@ -122,7 +646,7 @@ public class PcdGpuRenderer : MonoBehaviour
             for (int i = 0; i < nb.count; i++)
             {
                 var c = colors[i];
-                // 0xFFRRGGBB: DecodeRGB(u)øÕ ¿œƒ°
+                // 0xFFRRGGBB: DecodeRGB(u)ÏôÄ ÏùºÏπò
                 packed[i] = 0xFF000000u | ((uint)c.r << 16) | ((uint)c.g << 8) | (uint)c.b;
             }
             nb.col = new ComputeBuffer(nb.count, sizeof(uint), ComputeBufferType.Structured);
@@ -183,7 +707,7 @@ public class PcdGpuRenderer : MonoBehaviour
 
     void OnEnable()
     {
-        // RenderSystem µÓ∑œ
+        // RenderSystem Îì±Î°ù
         var sys = PcdBillboardRenderSystem.Instance;
         if (sys != null) sys.Register(this);
     }
@@ -215,106 +739,18 @@ public class PcdGpuRenderer : MonoBehaviour
         activeNodeCount = _nodes.Count;
     }
 
-    // RenderIndirect (SRPøÎ)
-    /*public void RenderIndirect(CommandBuffer cmd, Camera cam)
-    {
-        if (pointMaterial == null) return;
-        if (_drawOrder.Count == 0) return;
-        if (renderMode != RenderMode.IndirectBillboard) return;
-
-        EnsureQuad();
-
-        // ∞¯≈Î ªÛºˆ
-        pointMaterial.SetFloat("_PointSize", pointSize);
-        pointMaterial.SetFloat("_SoftEdge", softEdge);
-        pointMaterial.SetFloat("_RoundMask", roundMask ? 1f : 0f);
-        pointMaterial.SetMatrix("_LocalToWorld", transform.localToWorldMatrix);
-        pointMaterial.SetInt("_HasColor", 0);
-
-        // Color
-        //pointMaterial.SetColor("_Tint", Color.white);
-        pointMaterial.SetVector("_DistRange", new Vector2(10.0f, 200f));
-        pointMaterial.SetVector("_ColorAtten", new Vector2(0.1f, 0f));
-
-        // »≠∏È/«‡∑ƒ ¿¸¥ﬁ
-        // pointMaterial.SetVector("_PcdScreenSize", new Vector4(cam.pixelWidth, cam.pixelHeight, 0, 0));
-        pointMaterial.SetMatrix("_View", cam.worldToCameraMatrix);
-        pointMaterial.SetMatrix("_Proj", cam.projectionMatrix);
-
-        // ªÁ¿Ã¬° ∆ƒ∂ÛπÃ≈Õ ¿¸¥ﬁ
-        pointMaterial.SetFloat("_MinPixel", minPixelSize);
-        pointMaterial.SetFloat("_MaxPixel", maxPixelSize);
-        pointMaterial.SetFloat("_AttenScale", attenuationScale);
-        pointMaterial.SetFloat("_AdaptiveScale", adaptiveScale);
-
-        // ∏µÂ ≈∞øˆµÂ ≈‰±€
-        pointMaterial.DisableKeyword("POINTSIZE_FIXED");
-        pointMaterial.DisableKeyword("POINTSIZE_ATTEN");
-        pointMaterial.DisableKeyword("POINTSIZE_ADAPTIVE");
-        switch (sizeMode)
-        {
-            case PointSizeMode.Fixed: pointMaterial.EnableKeyword("POINTSIZE_FIXED"); break;
-            case PointSizeMode.Attenuated: pointMaterial.EnableKeyword("POINTSIZE_ATTEN"); break;
-            case PointSizeMode.Adaptive: pointMaterial.EnableKeyword("POINTSIZE_ADAPTIVE"); break;
-        }
-
-        for (int i = 0; i < _drawOrder.Count; i++)
-        {
-            int nodeId = _drawOrder[i];
-            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
-            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
-
-            pointMaterial.SetBuffer("_Positions", nb.pos);
-
-            // Fade ∆ƒ∂ÛπÃ≈Õ ¿¸¥ﬁ
-            float fade = 1f; int fmode = 0;
-            if (_nodeFades.TryGetValue(nodeId, out var f)) { fade = f.fade; fmode = f.mode; }
-            pointMaterial.SetFloat(ID_LodFade, fade);
-            pointMaterial.SetFloat(ID_DitherFade, (fmode == 2) ? 1f : 0f);
-
-            if (useColors && nb.col != null)
-            {
-
-                pointMaterial.SetBuffer("_Colors", nb.col);
-                pointMaterial.SetInt("_HasColor", 1);
-            }
-            else
-            {
-                pointMaterial.SetInt("_HasColor", 0);
-            }
-
-            var bounds = nb.bounds.size.sqrMagnitude > 0
-                ? nb.bounds
-                : new Bounds(transform.position, Vector3.one * 1000000f); // ƒ√∏µ πË¡¶ ¿”Ω√ƒ°
-
-            // ¿Œµ∑∫∆Æ µÂ∑ŒøÏ
-            cmd.DrawMeshInstancedIndirect(
-                s_quad,
-                0,
-                pointMaterial,
-                0,              // Ω¶¿Ã¥ı ∆–Ω∫ ¿Œµ¶Ω∫(∫∏≈Î 0)
-                nb.args,
-                0,
-                null
-            );
-        }
-    }*/
-
-    // splatAccum ∑ª¥ı∏µ (SRPøÎ)
+    // splatAccum Î†åÎçîÎßÅ (SRPÏö©)
     public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
     {
         if (_drawOrder.Count == 0) return;
         if (pointMaterial == null)
         {
-            // ¡ˆø¨ ª˝º∫(«¡∑Œ¡ß∆Æø° ºŒ¿Ã¥ı ∆˜«‘)
             var sh = Shader.Find("Custom/PcdSplatAccum");
             if (sh == null) return;
             pointMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
         }
         EnsureQuad();
 
-        // ∞¯≈Î ªÛºˆ(∏”∆º∏ÆæÛ «¡∑Œ∆€∆º ∫Ì∑œ¿∏∑Œµµ ∞°¥…)
-        pointMaterial.SetFloat(ID_PointSize, pointSize);
         pointMaterial.SetFloat(ID_KernelSharpness, kernelSharpness);
         pointMaterial.SetFloat(ID_Gaussian, gaussianKernel ? 1f : 0f);
         pointMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
@@ -325,31 +761,85 @@ public class PcdGpuRenderer : MonoBehaviour
             if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
             if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
 
-            pointMaterial.SetBuffer(ID_Positions, nb.pos);
+            // px ÎèôÍ∏∞Ìôî
+            float px = GetNodePointSizePx(cam, nb, nodeId);
 
-            if (useColors && nb.col != null)
-            {
-                pointMaterial.SetBuffer(ID_Colors, nb.col);
-                pointMaterial.SetInt(ID_HasColor, 1);
-            }
-            else
-            {
-                pointMaterial.SetInt(ID_HasColor, 0);
-            }
+            // Fade
+            float nodeFade = ComputeNodeFade(QueryNodeLevel(nodeId),
+                                             Vector3.Distance(cam.transform.position, transform.TransformPoint(
+                                                 (nb.bounds.size.sqrMagnitude > 0) ? nb.bounds.center : transform.position)));
 
-            var bounds = nb.bounds.size.sqrMagnitude > 0
-                ? nb.bounds
-                : new Bounds(transform.position, Vector3.one * 1000000f);
+            BindNodeBuffersToMaterial(pointMaterial, nb, nb.col != null);
+            pointMaterial.SetFloat(ID_PointSize, px);
+            pointMaterial.SetFloat(ID_NodeFade, nodeFade);
+
+            cmd.DrawMeshInstancedIndirect(s_quad, 0, pointMaterial, 0, nb.args, 0, null);
+        }
+    }
+
+    // EDL Î†åÎçîÎßÅ Ï†ÑÏö©
+    public void RenderSplatDepthProxy(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+
+        if (splatDepthProxyMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatDepthProxy");
+            if (sh == null) return;
+            splatDepthProxyMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        splatDepthProxyMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+            splatDepthProxyMaterial.SetFloat(ID_PointSize, px);
+
+            // DepthProxyÎäî ÏÉâ Î≤ÑÌçº Î∂àÌïÑÏöî
+            splatDepthProxyMaterial.SetBuffer(ID_Positions, nb.pos);
 
             cmd.DrawMeshInstancedIndirect(
-                s_quad,
-                0,
-                pointMaterial,
-                0,       // PcdSplatAccum¿∫ Pass 0∏∏ ¡∏¿Á
-                nb.args,
-                0,
-                null
+                s_quad, 0, splatDepthProxyMaterial, 0, nb.args, 0, null
             );
         }
     }
-}
+
+    // EDL Í∞ÑÏù¥ Ïª¨Îü¨ Î†åÎçîÎßÅ Ï†ÑÏö©
+    public void RenderSplatColorLite(CommandBuffer cmd, Camera cam)
+    {
+        if (_drawOrder.Count == 0) return;
+
+        if (splatColorLiteMaterial == null)
+        {
+            var sh = Shader.Find("Custom/PcdSplatColorLite");
+            if (sh == null) return;
+            splatColorLiteMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
+        }
+        EnsureQuad();
+
+        splatColorLiteMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
+        splatColorLiteMaterial.SetFloat(ID_HasSRGB, 1.0f);
+
+        for (int i = 0; i < _drawOrder.Count; i++)
+        {
+            int nodeId = _drawOrder[i];
+            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
+            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
+
+            float px = GetNodePointSizePx(cam, nb, nodeId);
+            splatColorLiteMaterial.SetFloat(ID_PointSize, px);
+
+            BindNodeBuffersToMaterial(splatColorLiteMaterial, nb, nb.col != null);
+
+            cmd.DrawMeshInstancedIndirect(
+                s_quad, 0, splatColorLiteMaterial, 0, nb.args, 0, null
+            );
+        }
+    }
+}*/

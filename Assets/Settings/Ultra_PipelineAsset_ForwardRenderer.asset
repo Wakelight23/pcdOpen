@@ -14,19 +14,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_Active: 1
   settings:
-    accumEvent: 500
-    normalizeEvent: 600
-    accumColorName: _AccumColor
-    accumWeightName: _AccumWeight
-    accumDepthName: _AccumDepth
-    accumColorFormat: 2
-    accumWeightFormat: 15
-    accumDepthFormat: 14
+    depthProxyEvent: 250
+    accumEvent: 300
+    normEdlEvent: 600
+    accumName: _Accum
+    accumFormat: 0
     splatAccumMaterial: {fileID: 2100000, guid: 56d645142647ba14a8509d3fd06b373a, type: 2}
-    normalizeMaterial: {fileID: 2100000, guid: 23cb78b37f1fd134e9b0591d1091e74e, type: 2}
-    pointSize: 28.5
-    kernelSharpness: 2.14
-    gaussianKernel: 1
+    normEdlMaterial: {fileID: 2100000, guid: 9fa7bf8ec2fc1034cbb8ca32614f495e, type: 2}
+    pointBudget: 1000000
+    sseThreshold: 0.66
+    sseHysteresis: 0.036
+    edlSettings: {fileID: 11400000, guid: a922b3c0a2866614b9f8de7dd0c99854, type: 2}
+    edlRadiusScaleK: 0.5
+    edlDownsample: 1
+    edlDepthRTName: _PcdDepthRT
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
