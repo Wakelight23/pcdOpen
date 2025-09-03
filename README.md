@@ -6,19 +6,16 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 
 이 Viewer는 .pcd 확장자 데이터를 확인하기 위해 제작되었습니다.
 
-## Patch Note (ver 0.0.5)
-	- EDL 적용이 불분명하던 부분을 재정립하여 작동하도록 수정했습니다.
-	- 모든 Point가 렌더링되던 방식에서 화면에 보이는 부분만 렌더링 되도록 변경되었습니다.
-    - 깊이에 따라 색상이 변경됩니다.
-    - UI에 그래픽 옵션 추가 및 변경되었습니다.
+## Patch Note (ver 0.0.6)
+- 계층 표현이 더 명확하게 보이도록 수정되었습니다.
+	- Point를 불투명하게 변경했습니다.
+	- EDL이 더 명확하게 표현됩니다.
 	
-## Build File
-[PcdOpen_ver0.0.5 (Window)](https://drive.google.com/file/d/1fDlPgfsnFEjV5CzTSOUvaYDn0Cu1Yi9P/view?usp=sharing)
+## Build
+[PcdOpen_ver0.0.6 (WinOS)](https://drive.google.com/file/d/1GM_ix6DD7zbd1GmMu_WZ6Xqfou8Mcmn7/view?usp=sharing)
 
 ### Notice
 - 용량이 높아질수록 불러오기 시간이 길어집니다.
-- Root Sample 수치를 높이면 더 정확한 Point Cloud를 얻을 수 있지만 그래픽 로드율이 높아집니다.
-- Gaussian 옵션을 조작하면 Point 모양이 변경됩니다.
 - UI에 있는 옵션의 값을 조작해도 변경되지 않는 값들이 있습니다.
 
 ## Dev Note
@@ -65,6 +62,17 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 - 계층별 색상 표현 구현
 - MRT 누적 기법 사용 (Accum, Normalize)
 - 깊이에 따른 색상 표현 변경 -> 카메라 기준으로 거리에 따라 색 변경
+
+</details>
+
+<details>
+<summary>#5</summary>
+
+202500902 ~ 20250903
+- Point 테두리 명확하게 표시
+- 일정 거리 Point와 멀어지면 빈 공간을 채우도록 구현
+- UI EDL 옵션 사용 가능하도록 연결 (Brightness, RadiusK만 작동중)
+- Shader 경량화 (4Pass -> 2Pass)
 
 </details>
 

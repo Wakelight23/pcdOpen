@@ -22,12 +22,11 @@ MonoBehaviour:
     splatAccumMaterial: {fileID: 2100000, guid: 56d645142647ba14a8509d3fd06b373a, type: 2}
     normEdlMaterial: {fileID: 2100000, guid: 9fa7bf8ec2fc1034cbb8ca32614f495e, type: 2}
     pointBudget: 1000000
-    sseThreshold: 0.66
-    sseHysteresis: 0.036
+    sseThreshold: 0.6718297
+    sseHysteresis: 0.043886434
     edlSettings: {fileID: 11400000, guid: a922b3c0a2866614b9f8de7dd0c99854, type: 2}
-    edlRadiusScaleK: 0.5
-    edlDownsample: 1
-    edlDepthRTName: _PcdDepthRT
+    edlRadiusScaleK: 1.3880126
+    edlDownsample: 2
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
