@@ -13,7 +13,7 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 - UI 수정
 	
 ## Build
-[PcdOpen_ver0.0.6 (WinOS)](https://drive.google.com/file/d/1GM_ix6DD7zbd1GmMu_WZ6Xqfou8Mcmn7/view?usp=sharing)
+[PcdOpen_ver0.0.6 (WinOS)](https://drive.google.com/file/d/1unAqOythX4tSyiXC5HBcTZ187pDELmdp/view?usp=sharing)
 
 ### Notice
 - 용량이 높아질수록 불러오기 시간이 길어집니다.
