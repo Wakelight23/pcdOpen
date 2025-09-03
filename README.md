@@ -10,6 +10,7 @@ Unity엔진으로 Point Cloud Data를 화면에 표시합니다.
 - 계층 표현이 더 명확하게 보이도록 수정되었습니다.
 	- Point를 불투명하게 변경했습니다.
 	- EDL이 더 명확하게 표현됩니다.
+- UI 수정
 	
 ## Build
 [PcdOpen_ver0.0.6 (WinOS)](https://drive.google.com/file/d/1GM_ix6DD7zbd1GmMu_WZ6Xqfou8Mcmn7/view?usp=sharing)

@@ -21,15 +21,23 @@ public class PcdOpenController : MonoBehaviour
     [Header("Targets")]
     [SerializeField] private PcdEntry pcdEntry;
 
+    [Header("Panel Toggle")] // NEW
+    [SerializeField] private Button togglePanelBtn;       // 패널 토글 버튼
+    [SerializeField] private GameObject targetPanel;      // 토글할 패널 GameObject
+    [SerializeField] private TMP_Text togglePanelLabel;   // 버튼 라벨(선택)
+
     private string lastPath;
 
     void Awake()
     {
         if (openBtn) openBtn.onClick.AddListener(() => _ = OpenAndLoadAsync());
         if (reloadBtn) reloadBtn.onClick.AddListener(() => _ = ReloadAsync());
+        if (togglePanelBtn) togglePanelBtn.onClick.AddListener(TogglePanel);
         SetProgress(false);
         SetProgressUI(false);
-        SetStatus("Ready.");
+        SetStatus("Ready");
+
+        RefreshTogglePanelLabel();
     }
     void OnEnable()
     {
@@ -45,6 +53,19 @@ public class PcdOpenController : MonoBehaviour
         SetProgressUI(true);
         SetProgressValue(t, label);
         if (t >= 1f) SetProgressUI(false);
+    }
+    void TogglePanel()
+    {
+        bool next = !targetPanel.activeSelf;
+        targetPanel.SetActive(next);
+        RefreshTogglePanelLabel();
+    }
+
+    // 버튼 라벨 동기화(선택)
+    void RefreshTogglePanelLabel()
+    {
+        if (!togglePanelLabel || !targetPanel) return;
+        togglePanelLabel.text = targetPanel.activeSelf ? "패널 끄기" : "패널 켜기";
     }
 
 
