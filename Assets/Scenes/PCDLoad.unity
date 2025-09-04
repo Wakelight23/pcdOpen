@@ -334,7 +334,7 @@ MonoBehaviour:
   distanceFadeNear: 5
   distanceFadeFar: 200
   kernelSharpness: 0.5
-  gaussianKernel: 0
+  gaussianKernel: 1
   splatDepthProxyMaterial: {fileID: 2100000, guid: 5276a3fdc9a4c86488a2b3dd381ec139, type: 2}
   splatColorLiteMaterial: {fileID: 2100000, guid: 879e2b0644ccffb488795431b15c7665, type: 2}
   depthMatchEps: 0.5
@@ -360,11 +360,11 @@ MonoBehaviour:
   worldTransform: {fileID: 488953056}
   normalizeToOrigin: 1
   forceCameraFocus: 1
-  pointBudget: 1000000
+  pointBudget: 5000000
   screenErrorTarget: 8
   maxLoadsPerFrame: 1
   maxUnloadsPerFrame: 4
-  rootSampleCount: 1000000
+  rootSampleCount: 5000000
   octreeMaxDepth: 8
   minPointsPerNode: 30
   maxPointsPerNode: 200000

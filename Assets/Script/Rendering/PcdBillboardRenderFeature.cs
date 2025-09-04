@@ -53,11 +53,8 @@ public class PcdBillboardRenderFeature : ScriptableRendererFeature
 
     public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData rd)
     {
-        if (_combinedPass == null) return;
-        var camColor = renderer.cameraColorTargetHandle;
-        // _combinedPass.SetSources(camColor);
+        if (_combinedPass == null || _accumPass == null) return;
         _combinedPass.SetSources(_accumPass._accum);
-
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -103,12 +100,22 @@ public class PcdBillboardRenderFeature : ScriptableRendererFeature
                 _settings.splatAccumMaterial.SetFloat(ID_Gaussian, 0f);
 
                 var cam = rd.cameraData.camera;
+
+                // Æò±Õ px °è»ê ¹× Àü¿ª ¼¼ÆÃ
+                float sumPx = 0f; int sumPts = 0;
                 foreach (var r in _renderers)
                 {
                     if (r == null || !r.isActiveAndEnabled) continue;
+                    // LOD °»½Å °â Æò±Õ px »ùÇÃ¸µ
+                    float avgPxR = r.ComputeAveragePointPx(cam, 16); // °¡º­¿î »ùÇÃ·¯ »ç¿ë 
+                    sumPx += avgPxR * r.totalPointCount;            // °¡Áß Æò±Õ¿ë ´©Àû 
+                    sumPts += r.totalPointCount;
+
                     _settings.splatAccumMaterial.SetMatrix("_LocalToWorld", r.transform.localToWorldMatrix);
                     r.RenderSplatAccum(cmd, cam);
                 }
+                float globalAvgPx = (sumPts > 0) ? (sumPx / Mathf.Max(1, sumPts)) : 1f;
+                cmd.SetGlobalFloat(ID_GlobalAvgPx, globalAvgPx);
             }
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);

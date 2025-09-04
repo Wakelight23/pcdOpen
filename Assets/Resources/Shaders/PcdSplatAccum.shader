@@ -4,7 +4,7 @@ Shader "Custom/PcdSplatAccum"
     {
         _PointSize       ("Point Size (pixels)", Float) = 2.0
         _KernelSharpness ("Kernel Sharpness", Range(0.5,3)) = 1.5
-        [Toggle]_Gaussian("Gaussian Kernel", Float) = 0
+        [Toggle]_Gaussian("Gaussian Kernel", Float) = 1
 
         _DepthMatchEps   ("Depth Match Eps", Float) = 0.001
         _PcdDepthRT      ("Front invDepth RT", 2D) = "black" {}
