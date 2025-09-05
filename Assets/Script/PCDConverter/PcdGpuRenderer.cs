@@ -72,7 +72,7 @@ public class PcdGpuRenderer : MonoBehaviour
     static readonly int ID_MaxDepth = Shader.PropertyToID("_MaxDepth");
     static readonly int ID_PcdDepthRT = Shader.PropertyToID("_PcdDepthRT");
 
-    // ===== Helpers =====
+    #region Helpers
     static bool IsMainThread()
     {
         try { var _ = Time.frameCount; return true; }
@@ -200,8 +200,9 @@ public class PcdGpuRenderer : MonoBehaviour
         }
         return (n > 0) ? (float)(sum / n) : pointSize;
     }
+    #endregion
 
-    // ===== External API =====
+    #region External API
     public void AddOrUpdateNode(int nodeId, Vector3[] positions, Color32[] colors, Bounds nodeBounds = default)
     {
         if (!IsMainThread())
@@ -302,45 +303,9 @@ public class PcdGpuRenderer : MonoBehaviour
     }
 
     void OnDestroy() => ClearAllNodes();
+    #endregion
 
-
-
-    // ===== Passes =====
-
-    // Front-only color (optional helper for EDL debug or pre-mask)
-    public void RenderSplatColorLite(CommandBuffer cmd, Camera cam)
-    {
-        if (_drawOrder.Count == 0) return;
-
-        if (splatColorLiteMaterial == null)
-        {
-            var sh = Shader.Find("Custom/PcdSplatColorLite");
-            if (sh == null) return;
-            splatColorLiteMaterial = new Material(sh) { hideFlags = HideFlags.DontSave };
-        }
-        EnsureQuad();
-
-        splatColorLiteMaterial.SetMatrix(ID_L2W, transform.localToWorldMatrix);
-        splatColorLiteMaterial.SetFloat(ID_HasSRGB, 1.0f);
-        splatColorLiteMaterial.SetFloat(ID_DepthMatchEps, depthMatchEps); // shader uses _PcdDepthRT globally
-
-        for (int i = 0; i < _drawOrder.Count; i++)
-        {
-            int nodeId = _drawOrder[i];
-            if (!_nodes.TryGetValue(nodeId, out var nb)) continue;
-            if (nb == null || nb.count <= 0 || nb.pos == null || nb.args == null) continue;
-
-            float px = GetNodePointSizePx(cam, nb, nodeId);
-            splatColorLiteMaterial.SetFloat(ID_PointSize, px);
-
-            BindNodeBuffersToMaterial(splatColorLiteMaterial, nb, nb.col != null);
-
-            cmd.DrawMeshInstancedIndirect(
-                s_quad, 0, splatColorLiteMaterial, 0, nb.args, 0, null
-            );
-        }
-    }
-
+    #region Passes
     // ==== Splat Accumulation (main pass) ====
     public int maxDepthForMaterial = 8; // 인스펙터 노출해도 됨
     public void RenderSplatAccum(CommandBuffer cmd, Camera cam)
@@ -382,4 +347,5 @@ public class PcdGpuRenderer : MonoBehaviour
             cmd.DrawMeshInstancedIndirect(s_quad, 0, pointMaterial, 0, nb.args, 0, null);
         }
     }
+    #endregion
 }

@@ -6,6 +6,10 @@ Shader "Custom/PcdSplatAccum"
         _KernelSharpness ("Kernel Sharpness", Range(0.5,3)) = 1.5
         [Toggle]_Gaussian("Gaussian Kernel", Float) = 1
 
+        _KernelShape     ("Kernel Shape (0 circ,1 sqr,2 gauss)", Float) = 0
+        _GaussianSigma   ("Gaussian Sigma (px)", Float) = 0.75
+        _GaussianHardK   ("Gaussian Hard Cut τ", Range(0,1)) = 0.05
+
         _DepthMatchEps   ("Depth Match Eps", Float) = 0.001
         _PcdDepthRT      ("Front invDepth RT", 2D) = "black" {}
 
@@ -59,14 +63,13 @@ Shader "Custom/PcdSplatAccum"
                 float2 d = p - 0.5;
                 float r2 = dot(d,d) * 4.0;
                 // 원형 풋프린트 밖 프래그먼트 제거(깊이/컬러 패스 일치)
-                if (r2 > 1.0) discard;
+                // if (r2 > 1.0) discard;
+                float hardMask, wKernel;
+                ComputeKernelHard(i.uv, hardMask, wKernel);
+                if (hardMask < 0.5) discard; // 불투명 유지: 컷아웃 확정
 
                 // 가중치 계산은 가장자리 소프트닝에만 사용
-                float weight;
-                if (_Gaussian > 0.5) { float sigma2 = 0.25 / max(_KernelSharpness, 1e-3); weight = exp(-r2 / sigma2); }
-                else { float dlin = saturate(1.0 - sqrt(r2)); weight = pow(dlin, max(_KernelSharpness, 1.0)); }
-
-                weight *= saturate(_NodeFade);
+                float weight = wKernel * saturate(_NodeFade);
 
                 float3 col = (_HasColor == 1) ? UnpackRGBA8(_Colors[i.pid]) : 1.0.xxx;
 
@@ -80,8 +83,9 @@ Shader "Custom/PcdSplatAccum"
                 }
 
                 // 불투명 출력
-                o.colorAccum = float4(col, 1.0);
-                return float4(col, 1.0);
+                // o.colorAccum = float4(col, 1.0);
+                // return float4(col, 1.0);
+                return float4(col * weight, weight);
             }
             ENDHLSL
         }
@@ -108,7 +112,10 @@ Shader "Custom/PcdSplatAccum"
                 float2 p = i.uv * 0.5 + 0.5;
                 float2 d = p - 0.5;
                 float r2 = dot(d,d) * 4.0;
-                if (r2 > 1.0) discard;
+                // if (r2 > 1.0) discard;
+                float hardMask, wKernel;
+                ComputeKernelHard(i.uv, hardMask, wKernel);
+                if (hardMask < 0.5) discard; // 불투명 footprint와 동일
             }
             ENDHLSL
         }

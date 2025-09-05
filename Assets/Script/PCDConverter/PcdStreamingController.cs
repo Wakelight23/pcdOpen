@@ -82,11 +82,32 @@ public sealed class PcdStreamingController : MonoBehaviour
     [SerializeField] float _fadeDuration = 0.25f; // seconds
     [SerializeField] int _fadeMode = 2; // 1=alpha, 2=dither
 
+    void Update()
+    {
+        if (_scheduler == null) return;
+        if (_scheduler.Camera == null) _scheduler.Camera = Camera.main;
+
+        _scheduler.PointBudget = pointBudget;
+        _scheduler.ScreenErrorTarget = screenErrorTarget;
+        _scheduler.MaxLoadsPerFrame = maxLoadsPerFrame;
+        _scheduler.MaxUnloadsPerFrame = maxUnloadsPerFrame;
+
+        _scheduler.Tick();
+
+        // 통계 업데이트
+        var active = _scheduler.ActiveNodes;
+        activeNodes = active != null ? active.Count : 0;
+
+        // activePoints는 간접 추정: gpuRenderer.totalPointCount 사용(활성 노드 모두 업서트된다고 가정)
+        activePoints = (gpuRenderer != null) ? gpuRenderer.totalPointCount : 0;
+    }
+
     void LateUpdate()
     {
         UpdateFade(Time.deltaTime);
     }
 
+    #region Main Thread Helper
     // 메인 스레드 확인용
     static bool IsMainThread()
     {
@@ -149,7 +170,9 @@ public sealed class PcdStreamingController : MonoBehaviour
         _cts?.Dispose();
         _cts = null;
     }
+    #endregion
 
+    #region PCD Load
     public async Task InitializeAsync(string path)
     {
         pcdPath = path;
@@ -291,28 +314,9 @@ public sealed class PcdStreamingController : MonoBehaviour
 
         Debug.Log("[PcdStreamingController] Initialized.");
     }
+    #endregion
 
-    void Update()
-    {
-        if (_scheduler == null) return;
-        if (_scheduler.Camera == null) _scheduler.Camera = Camera.main;
-
-        _scheduler.PointBudget = pointBudget;
-        _scheduler.ScreenErrorTarget = screenErrorTarget;
-        _scheduler.MaxLoadsPerFrame = maxLoadsPerFrame;
-        _scheduler.MaxUnloadsPerFrame = maxUnloadsPerFrame;
-
-        _scheduler.Tick();
-
-        // 통계 업데이트
-        var active = _scheduler.ActiveNodes;
-        activeNodes = active != null ? active.Count : 0;
-
-        // activePoints는 간접 추정: gpuRenderer.totalPointCount 사용(활성 노드 모두 업서트된다고 가정)
-        activePoints = (gpuRenderer != null) ? gpuRenderer.totalPointCount : 0;
-    }
-
-    // ======= 스케줄러 콜백 구현 =======
+    # region Scheduler Callbacks
 
     // 스케줄러가 특정 노드를 로드하라고 요청할 때 호출
     void OnRequestLoad(IOctreeNode node)
@@ -483,10 +487,9 @@ public sealed class PcdStreamingController : MonoBehaviour
             });
         }
     }
+    #endregion
 
-
-    // ======= 노드 로드/분할/업로드 =======
-
+    #region Node loading, Subdivision, and Uploading
     async Task LoadNodeAsync(IOctreeNode schedNode)
     {
         try
@@ -579,9 +582,9 @@ public sealed class PcdStreamingController : MonoBehaviour
         CachePositions(ids, data.positions);
         BeginFadeIn(node.NodeId);
     }
+    #endregion
 
-    // ======= 보조: 포인트 ID -> 좌표 =======
-
+    #region Helper : pointId -> position
     Vector3 GetPositionByPointId(int pid)
     {
         if (_posCache.TryGetValue(pid, out var v)) return v;
@@ -601,8 +604,9 @@ public sealed class PcdStreamingController : MonoBehaviour
             _posCache[ids[i]] = positions[i];
         }
     }
+    #endregion
 
-    // ======= IOctreeNode 어댑터 =======
+    #region IOctreeNode Adapter
     // 스케줄러는 인터페이스 IOctreeNode를 요구하므로, PcdOctree.Node를 감싸는 어댑터 제공
     sealed class OctNodeAdapter : IOctreeNode
     {
@@ -659,9 +663,9 @@ public sealed class PcdStreamingController : MonoBehaviour
     {
         return new OctNodeAdapter(n, parent);
     }
+    #endregion
 
-    // ======= PcdIndexBuilder.PcdIndex -> PcdSubloader용 PcdIndex 변환 =======
-
+    #region PcdIndexBuilder.PcdIndex -> PcdSubloader PcdIndex Convert
     PcdIndex ToSubloaderIndex(PcdIndexBuilder.PcdIndex src, PcdLoader.Header header)
     {
         var dst = new PcdIndex
@@ -757,9 +761,9 @@ public sealed class PcdStreamingController : MonoBehaviour
         L.totalBytes = off;
         return L;
     }
+    #endregion
 
-    // ======= 메인 스레드 디스패처 =======
-
+    #region Main Thread Dispatcher
     static Task RunOnMainThreadAsync(Action action)
     {
         var go = FindObjectOfType<PcdEntry>(); // 이미 제공된 Entry의 메인스레드 큐 재사용
@@ -806,6 +810,7 @@ public sealed class PcdStreamingController : MonoBehaviour
     }
 
     sealed class StreamingDispatcherHost : MonoBehaviour { }
+    #endregion
 
     #region LOD Fade Update
     void UpdateFade(float dt)
@@ -841,7 +846,6 @@ public sealed class PcdStreamingController : MonoBehaviour
     #endregion
 
     #region Color Utils
-
     public enum PointClassification
     {
         Interior = 0,   // 내부

@@ -7,6 +7,10 @@ public class PcdGpuRendererUI : MonoBehaviour
     public PcdGpuRenderer targetRenderer;
     public PcdBillboardRenderFeature renderFeature; // URP 렌더 피처
 
+    [Header("Entry/Streaming Targets")]
+    public PcdEntry entry;
+    public PcdStreamingController streaming;
+
     [Header("Window")]
     public bool showUI = false;
     public KeyCode toggleKey = KeyCode.F1;
@@ -25,6 +29,10 @@ public class PcdGpuRendererUI : MonoBehaviour
     {
         if (targetRenderer == null)
             targetRenderer = GetComponent<PcdGpuRenderer>();
+        if (entry == null)
+            entry = FindObjectOfType<PcdEntry>(true);
+        if (streaming == null)
+            streaming = FindObjectOfType<PcdStreamingController>(true);
     }
 
     void Update()
@@ -80,6 +88,7 @@ public class PcdGpuRendererUI : MonoBehaviour
         bool block = mouseInWindowRough || windowRect.Contains(GetMousePosGUI());
         InputBlockedByUI = block;
     }
+
     static Vector2 GetMousePosGUI()
     {
         Vector2 m = Input.mousePosition;
@@ -101,6 +110,10 @@ public class PcdGpuRendererUI : MonoBehaviour
         // 바인딩 체크
         DrawBindingHelpers();
 
+        // Entry / Streaming UI
+        if (entry != null) DrawEntrySection();
+        if (streaming != null) DrawStreamingSection();
+
         if (targetRenderer != null)
         {
             DrawRendererSection();
@@ -112,9 +125,7 @@ public class PcdGpuRendererUI : MonoBehaviour
         }
 
         DrawShaderMaterialSection();
-
         DrawStatsSection();
-
         DrawWindowOptions();
 
         GUILayout.EndScrollView();
@@ -149,6 +160,182 @@ public class PcdGpuRendererUI : MonoBehaviour
             if (renderFeature == null)
                 renderFeature = FindObjectOfType<PcdBillboardRenderFeature>(true);
         }
+        GUILayout.EndHorizontal();
+
+        // Entry
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("PcdEntry", GUILayout.Width(140));
+        GUILayout.Label(entry != null ? entry.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60)))
+        {
+            if (entry == null)
+                entry = FindObjectOfType<PcdEntry>(true);
+        }
+        GUILayout.EndHorizontal();
+
+        // Streaming Controller
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Streaming Ctrl", GUILayout.Width(140));
+        GUILayout.Label(streaming != null ? streaming.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60)))
+        {
+            if (streaming == null)
+                streaming = FindObjectOfType<PcdStreamingController>(true);
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawEntrySection()
+    {
+        GUILayout.Label("PcdEntry", _section);
+        GUILayout.BeginVertical("box");
+
+        // 경로/모드
+        bool useStr = ToggleRow("Use Streaming Controller", entry.useStreamingController);
+        if (useStr != entry.useStreamingController) entry.useStreamingController = useStr;
+
+        //bool convCol = ToggleRow("Converter Use Colors", entry.converterUseColors);
+        //if (convCol != entry.converterUseColors) entry.converterUseColors = convCol;
+
+        // Targets
+        GUILayout.Space(4);
+        GUILayout.Label("Targets", _section);
+        RowObj("GPU Renderer", ref entry.gpuRenderer, () =>
+        {
+            entry.gpuRenderer = entry.gpuRenderer ?? FindObjectOfType<PcdGpuRenderer>(true);
+        });
+        RowObj("GPU Point Material", ref entry.gpuPointMaterial);
+        RowObj("Target Camera", ref entry.targetCamera, () =>
+        {
+            entry.targetCamera = entry.targetCamera ?? Camera.main;
+        });
+        RowObj("World Transform", ref entry.worldTransform, () =>
+        {
+            entry.worldTransform = entry.worldTransform ?? entry.transform;
+        });
+
+        // Visibility/Normalize
+        GUILayout.Space(4);
+        bool norm = ToggleRow("Normalize To Origin", entry.normalizeToOrigin);
+        if (norm != entry.normalizeToOrigin) entry.normalizeToOrigin = norm;
+
+        bool focus = ToggleRow("Force Camera Focus", entry.forceCameraFocus);
+        if (focus != entry.forceCameraFocus) entry.forceCameraFocus = focus;
+
+        // Streaming options
+        GUILayout.Space(4);
+        GUILayout.Label("Streaming Options", _section);
+        entry.pointBudget = (int)SliderRow("Point Budget", entry.pointBudget, 100_000f, 50_000_000f);
+        entry.screenErrorTarget = SliderRow("Screen Error Target", entry.screenErrorTarget, 0.25f, 16f);
+        entry.maxLoadsPerFrame = (int)SliderRow("Max Loads/Frame", entry.maxLoadsPerFrame, 0f, 16f);
+        entry.maxUnloadsPerFrame = (int)SliderRow("Max Unloads/Frame", entry.maxUnloadsPerFrame, 0f, 32f);
+        entry.rootSampleCount = (int)SliderRow("Root Sample Count", entry.rootSampleCount, 1_000_000f, 5_000_000f);
+        entry.octreeMaxDepth = (int)SliderRow("Octree Max Depth", entry.octreeMaxDepth, 1f, 16f);
+        entry.minPointsPerNode = (int)SliderRow("Min Points/Node", entry.minPointsPerNode, 8f, 65_536f);
+        entry.maxPointsPerNode = (int)SliderRow("Max Points/Node", entry.maxPointsPerNode, 256f, 1_000_000f);
+
+        // Runtime options
+        GUILayout.Space(4);
+        bool rel = ToggleRow("Release CPU Arrays After Upload", entry.releaseCpuArraysAfterUpload);
+        if (rel != entry.releaseCpuArraysAfterUpload) entry.releaseCpuArraysAfterUpload = rel;
+
+        // Actions
+        GUILayout.Space(6);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Open PCD...")) entry.OpenFileAndLoadRuntime();
+#if UNITY_EDITOR
+        if (GUILayout.Button("Reload Last Path")) entry.SendMessage("ReloadLast", SendMessageOptions.DontRequireReceiver);
+#endif
+        if (GUILayout.Button("Clear Memory")) entry.ClearMemoryNow();
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndVertical();
+        GUILayout.Space(6);
+    }
+
+    void DrawStreamingSection()
+    {
+        GUILayout.Label("Streaming Controller", _section);
+        GUILayout.BeginVertical("box");
+
+        // 바인딩 표시
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Controller", GUILayout.Width(140));
+        GUILayout.Label(streaming != null ? streaming.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60)))
+            streaming = FindObjectOfType<PcdStreamingController>(true);
+        GUILayout.EndHorizontal();
+
+        if (streaming == null) { GUILayout.EndVertical(); GUILayout.Space(6); return; }
+
+        // Data
+        GUILayout.Space(4);
+        bool useCol = ToggleRow("Use Colors", streaming.useColors);
+        if (useCol != streaming.useColors) streaming.useColors = useCol;
+
+        bool norm = ToggleRow("Normalize To Origin", streaming.normalizeToOrigin);
+        if (norm != streaming.normalizeToOrigin) streaming.normalizeToOrigin = norm;
+
+        // Sort
+        GUILayout.Space(4);
+        GUILayout.Label("Draw Sort Mode", _section);
+        var modes = new[] { "FrontToBack", "BackToFront" };
+        int cur = streaming.drawSortMode == DrawSortMode.FrontToBack ? 0 : 1;
+        int next = GUILayout.SelectionGrid(cur, modes, 2);
+        if (next != cur) streaming.drawSortMode = next == 0 ? DrawSortMode.FrontToBack : DrawSortMode.BackToFront;
+
+        // Octree/LOD
+        GUILayout.Space(4);
+        streaming.octreeMaxDepth = (int)SliderRow("Octree Max Depth", streaming.octreeMaxDepth, 1f, 16f);
+        streaming.minPointsPerNode = (int)SliderRow("Min Points/Node", streaming.minPointsPerNode, 8f, 65_536f);
+        streaming.maxPointsPerNode = (int)SliderRow("Max Points/Node", streaming.maxPointsPerNode, 256f, 1_000_000f);
+        streaming.rootSampleCount = (int)SliderRow("Root Sample Count", streaming.rootSampleCount, 10_000f, 2_000_000f);
+
+        // Scheduling
+        GUILayout.Space(4);
+        streaming.pointBudget = (int)SliderRow("Point Budget", streaming.pointBudget, 100_000f, 50_000_000f);
+        streaming.screenErrorTarget = SliderRow("Screen Error Target", streaming.screenErrorTarget, 0.25f, 16f);
+        streaming.maxLoadsPerFrame = (int)SliderRow("Max Loads/Frame", streaming.maxLoadsPerFrame, 0f, 16f);
+        streaming.maxUnloadsPerFrame = (int)SliderRow("Max Unloads/Frame", streaming.maxUnloadsPerFrame, 0f, 32f);
+
+        // Rendering targets
+        GUILayout.Space(4);
+        RowObj("GPU Renderer", ref streaming.gpuRenderer, () =>
+        {
+            streaming.gpuRenderer = streaming.gpuRenderer ?? FindObjectOfType<PcdGpuRenderer>(true);
+        });
+        RowObj("Default Point Material", ref streaming.defaultPointMaterial);
+
+        // Runtime Color Classification
+        GUILayout.Space(4);
+        bool cls = ToggleRow("Enable Runtime Color Classification", streaming.enableRuntimeColorClassification);
+        if (cls != streaming.enableRuntimeColorClassification) streaming.enableRuntimeColorClassification = cls;
+        RowObj("Color Classifier", ref streaming.colorClassifier);
+
+        // Cache
+        //GUILayout.Space(4);
+        //bool useCache = ToggleRow("Use PCD Cache", streaming.usePcdCache);
+        //if (useCache != streaming.usePcdCache) streaming.usePcdCache = useCache;
+
+        //GUILayout.BeginHorizontal();
+        //GUILayout.Label("Cache Dataset Dir", GUILayout.Width(140));
+        //GUILayout.Label(string.IsNullOrEmpty(streaming.cacheDatasetDir) ? "(empty)" : streaming.cacheDatasetDir);
+        //GUILayout.EndHorizontal();
+
+        // Status
+        GUILayout.Space(4);
+        GUILayout.Label($"Active Nodes: {streaming.activeNodes}");
+        GUILayout.Label($"Active Points: {streaming.activePoints}");
+        GUILayout.Label($"Inflight Loads: {streaming.inflightLoads}");
+
+        // Actions
+        GUILayout.Space(6);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Init From pcdPath")) streaming.InitializeFromInspector();
+        if (GUILayout.Button("Dispose/Reset")) _ = streaming.DisposeAsync();
         GUILayout.EndHorizontal();
 
         GUILayout.EndVertical();
@@ -242,7 +429,6 @@ public class PcdGpuRendererUI : MonoBehaviour
         {
             GUILayout.Space(4);
             GUILayout.Label("EDL", _section);
-
             bool hq = ToggleRow("High Quality", s.edlSettings.highQuality);
             if (hq != s.edlSettings.highQuality) s.edlSettings.highQuality = hq;
 
@@ -374,7 +560,16 @@ public class PcdGpuRendererUI : MonoBehaviour
         GUILayout.EndVertical();
     }
 
-    // ----- 위젯 유틸 -----
+    // ----- 공용 위젯 -----
+
+    void RowObj<T>(string label, ref T obj, System.Action onFind = null) where T : UnityEngine.Object
+    {
+        GUILayout.BeginHorizontal();
+        GUILayout.Label(label, GUILayout.Width(140));
+        GUILayout.Label(obj != null ? obj.name : "(None)");
+        if (GUILayout.Button("Find", GUILayout.Width(60))) onFind?.Invoke();
+        GUILayout.EndHorizontal();
+    }
 
     bool ToggleRow(string label, bool value)
     {
@@ -431,5 +626,4 @@ public class PcdGpuRendererUI : MonoBehaviour
         if (m.HasProperty(name)) return m.GetColor(name);
         return def;
     }
-
 }

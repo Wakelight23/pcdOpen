@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 
+// PCD(점군 데이터) 읽기 -> 로컬 저장소에 캐시된 바이너리 파일에서 메타데이터 및 노드 정보 로드
 public sealed class PcdReader
 {
     readonly string _datasetDir;

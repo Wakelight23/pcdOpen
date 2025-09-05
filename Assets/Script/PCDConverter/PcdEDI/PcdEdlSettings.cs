@@ -11,7 +11,7 @@ public class PcdEdlSettings : ScriptableObject
     [Range(0.25f, 8.0f)] public float edlRadius = 2.0f;
 
     [Tooltip("윤곽 감쇠 강도. 값이 클수록 음영 대비가 강해집니다.")]
-    [Range(0.0f, 3.0f)] public float edlStrength = 0.5f;
+    [Range(0.0f, 10.0f)] public float edlStrength = 0.5f;
 
     [Tooltip("EDL 적용 후 밝기 보정 계수.")]
     [Range(0.25f, 3.0f)] public float brightnessBoost = 1.0f;

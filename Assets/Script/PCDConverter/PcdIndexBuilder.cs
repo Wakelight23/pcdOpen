@@ -4,10 +4,12 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 
-/// PCD 파일을 변환 없이 그대로 두고, 런타임 임의 접근/샘플링/부분 읽기를 가능하게 하는 인덱서.
-/// - ASCII: 헤더 이후 라인 시작 오프셋 테이블(전량 또는 샘플 간격형) 생성
-/// - Binary: stride/필드 오프셋을 계산하고 레코드 오프셋 공식을 제공
-/// - BinaryCompressed: 압축 영역의 시작/크기 및 SOA 레이아웃 메타만 제공(랜덤 접근이 제한적)
+/* 
+ * PCD 파일을 변환 없이 그대로 두고, 런타임 임의 접근/샘플링/부분 읽기를 가능하게 하는 인덱서.
+ * ASCII: 헤더 이후 라인 시작 오프셋 테이블(전량 또는 샘플 간격형) 생성
+ * Binary: stride/필드 오프셋을 계산하고 레코드 오프셋 공식을 제공
+ * BinaryCompressed: 압축 영역의 시작/크기 및 SOA 레이아웃 메타만 제공(랜덤 접근이 제한적 
+*/
 
 public static class PcdIndexBuilder
 {
@@ -64,6 +66,7 @@ public static class PcdIndexBuilder
         public bool verboseLog = false;
     }
 
+    #region Build
     public static PcdIndex Build(FileStream fs, PcdLoader.Header header, long dataOffset, BuildOptions opt = null)
     {
         if (fs == null) throw new ArgumentNullException(nameof(fs));
@@ -118,9 +121,9 @@ public static class PcdIndexBuilder
 
         return idx;
     }
+    #endregion
 
-    // ===== ASCII =====
-
+    #region ASCII
     static void BuildAsciiIndex(FileStream fs, PcdIndex idx, BuildOptions opt)
     {
         // 헤더 이후부터 라인 시작 오프셋을 수집
@@ -198,8 +201,9 @@ public static class PcdIndexBuilder
         idx.LineOffsets = offsets;
         idx.HasFullLineOffsets = (stride == 1) && (offsets.Count >= idx.Points);
     }
+    #endregion
 
-    // ===== Binary =====
+    #region Binary
 
     static void BuildBinaryIndex(FileStream fs, PcdIndex idx, BuildOptions opt)
     {
@@ -232,9 +236,9 @@ public static class PcdIndexBuilder
             }
         }
     }
+    #endregion
 
-    // ===== Binary Compressed =====
-
+    #region Binary Compressed
     static void BuildBinaryCompressedIndex(FileStream fs, PcdIndex idx, BuildOptions opt)
     {
         // 데이터 시작에서 8바이트 헤더 읽기: [compressedSize(uint32)][uncompressedSize(uint32)]
@@ -271,8 +275,9 @@ public static class PcdIndexBuilder
 
         idx.Soa = L;
     }
+    #endregion
 
-    // ===== 편의 메서드 =====
+    #region Helper Method
 
     /// Binary 모드: 포인트 i의 파일 오프셋 반환
     public static long GetBinaryPointOffset(PcdIndex idx, int i)
@@ -337,4 +342,5 @@ public static class PcdIndexBuilder
             return idx.LineOffsets[idx.LineOffsets.Count - 1];
         }
     }
+    #endregion
 }

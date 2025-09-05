@@ -36,7 +36,7 @@ public class PcdEntry : MonoBehaviour
     public float screenErrorTarget = 8.0f;
     public int maxLoadsPerFrame = 1;
     public int maxUnloadsPerFrame = 4;
-    [Tooltip("루트 초기 샘플 개수(스트리밍 모드)")]
+    [Tooltip("루트 초기 샘플 개수(값이 높아질수록 로드 시간 증가)")]
     public int rootSampleCount = 200_000;
     [Tooltip("옥트리 최대 깊이(스트리밍 모드)")]
     public int octreeMaxDepth = 8;
@@ -52,7 +52,7 @@ public class PcdEntry : MonoBehaviour
     PcdStreamingController _controller; // 스트리밍 모드에서 사용
     string _lastPath;
 
-    // ===== 간단 메인스레드 디스패처 =====
+    // ===== 메인스레드 디스패처 =====
     static PcdEntry s_dispatcherOwner;
     static readonly System.Collections.Concurrent.ConcurrentQueue<Action> s_mainQueue = new();
 
@@ -107,17 +107,7 @@ public class PcdEntry : MonoBehaviour
     public static void PostToMainThread(Action a) => s_mainQueue.Enqueue(a);
 
 
-
-#if UNITY_EDITOR
-    [ContextMenu("Load PCD (Editor)")]
-    public void LoadPcdEditor()
-    {
-        string path = EditorUtility.OpenFilePanel("Select PCD", "", "pcd");
-        if (string.IsNullOrEmpty(path)) return;
-        _ = InitializeWithPathAsync(path);
-    }
-#endif
-
+    #region UI Helpers & File Picker
     // ====== UI 버튼(OnClick)에서 호출 ======
     public void OpenFileAndLoadRuntime()
     {
@@ -160,8 +150,9 @@ public class PcdEntry : MonoBehaviour
         await Task.Yield();
         return result;
     }
+    #endregion
 
-    // ====== 메인 진입: 경로를 받아 초기화 ======
+    #region 메인 진입: 경로를 받아 초기화
     public async Task InitializeWithPathAsync(string path)
     {
         _lastPath = path;
@@ -187,8 +178,9 @@ public class PcdEntry : MonoBehaviour
 
         Debug.Log($"[PcdEntry] Initialized: streaming={useStreamingController}, path={path}");
     }
+    #endregion
 
-    // ====== 스트리밍 컨트롤러 경로 ======
+    #region StreamingController Path
     async Task InitializeStreamingAsync(string path)
     {
         // 컨트롤러 준비
@@ -222,8 +214,9 @@ public class PcdEntry : MonoBehaviour
         await _controller.InitializeAsync(path);
         Report(0.95f, "Finalize");
     }
+    #endregion
 
-    // ====== 단발 로더 + GPU 업로드 경로 ======
+    #region Single Loader + GPU Upload Path
     async Task InitializeSingleLoadAsync(string path)
     {
         try
@@ -282,8 +275,9 @@ public class PcdEntry : MonoBehaviour
             Debug.LogError(e);
         }
     }
+    #endregion
 
-    // ====== 카메라 포커스 ======
+    #region Camera Focus
     void FocusCameraHeuristics()
     {
         var cam = targetCamera != null ? targetCamera : Camera.main;
@@ -313,8 +307,9 @@ public class PcdEntry : MonoBehaviour
 
         Debug.Log($"[PcdEntry] Camera focused. pos={cam.transform.position}, lookAt={center}, near={cam.nearClipPlane}, far={cam.farClipPlane}, dist={dist:0.###}");
     }
+    #endregion
 
-    // ====== 리소스 정리 ======
+    #region Clean up previous resources
     void CleanupPrevious()
     {
         // 스트리밍 컨트롤러의 내부 상태까지 완전 정리
@@ -357,8 +352,19 @@ public class PcdEntry : MonoBehaviour
         });
         return tcs.Task;
     }
+    #endregion
 
-    // ====== 디버그/유틸 ======
+    #region Debug Utils (Editor 전용)
+#if UNITY_EDITOR
+    [ContextMenu("Load PCD (Editor)")]
+    public void LoadPcdEditor()
+    {
+        string path = EditorUtility.OpenFilePanel("Select PCD", "", "pcd");
+        if (string.IsNullOrEmpty(path)) return;
+        _ = InitializeWithPathAsync(path);
+    }
+#endif
+
 #if UNITY_EDITOR
     [ContextMenu("Reload Last Path")]
     void ReloadLast()
@@ -379,6 +385,7 @@ public class PcdEntry : MonoBehaviour
     {
         _ = PcdMemoryTools.ClearAllAsync(gpuRenderer);
     }
+    #endregion
 
     #region ProgressBar Util
     static public void Report(float t, string label = null)

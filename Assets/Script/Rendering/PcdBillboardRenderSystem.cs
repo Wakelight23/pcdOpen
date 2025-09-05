@@ -2,6 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+/*
+ * 렌더링을 위해 PcdGpuRenderer 인스턴스를 등록/관리하는 싱글톤 시스템
+ */
 public sealed class PcdBillboardRenderSystem : MonoBehaviour
 {
     public static PcdBillboardRenderSystem Instance { get; private set; }

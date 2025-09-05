@@ -178,7 +178,7 @@ public static class PcdLoader
         return offsets;
     }
 
-    // ===== 내부(공용화된) 파서 =====
+    #region Inner Parser
 
     static Header ParseHeaderStreaming(StreamReader sr, out long dataOffset)
     {
@@ -417,8 +417,9 @@ public static class PcdLoader
         var tmp = new byte[4]; Buffer.BlockCopy(buf, off, tmp, 0, 4); Array.Reverse(tmp);
         return BitConverter.ToUInt32(tmp, 0);
     }
+    #endregion
 
-    // ===== LZF 스트리밍 디코더 =====
+    #region LZF Streaming Decoder and Compressed Parser
     class LzfStreamDecoder
     {
         readonly Stream src;
@@ -789,4 +790,5 @@ public static class PcdLoader
         data.boundsMin = minV;
         data.boundsMax = maxV;
     }
+    #endregion
 }

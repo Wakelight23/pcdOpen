@@ -275,7 +275,7 @@ public sealed class PcdOctree
         }
     }
 
-    // 노드 세밀화 기준(간단): 화면 에러 임계값 비교 + 거리/레벨 가중
+    // 노드 세밀화 기준 : 화면 에러 임계값 비교 + 거리/레벨 가중
     public Func<float> GetDefaultScreenErrorThreshold = () => 2.0f;
 
     bool ShouldRefineNode(Node node, Camera cam, float nodeError)
@@ -319,7 +319,7 @@ public sealed class PcdOctree
             if (children[i].Contains(p)) return i;
         }
         // 경계 부동소수 오차로 Contains가 false일 수 있으므로,
-        // 가까운 센터 방향으로 분류하는 fallback:
+        // 가까운 센터 방향으로 분류하는 fallback
         var c0 = children[0].center;
         int best = 0;
         float bestD = (p - c0).sqrMagnitude;
@@ -337,10 +337,6 @@ public sealed class PcdOctree
         if (ids == null || ids.Count == 0)
             return new Bounds(Vector3.zero, Vector3.zero);
 
-        // 기존 코드
-        // var v0 = posGet(ids);
-
-        // 수정된 코드
         var v0 = posGet(ids[0]);
         Vector3 minV = v0, maxV = v0;
 
@@ -356,9 +352,7 @@ public sealed class PcdOctree
         return b;
     }
 
-    // 간단한 우선순위 큐(.NET 6 이상 PriorityQueue 사용 대체용) — Unity 옛 런타임 대비
-    // Unity 2021+에선 System.Collections.Generic.PriorityQueue 사용 가능.
-    // 하위 호환을 위해 간단 힙 구현 포함.
+    // 우선순위 큐
     sealed class PriorityQueue<TItem, TPriority> where TPriority : IComparable<TPriority>
     {
         List<(TItem item, TPriority pri)> _heap = new();

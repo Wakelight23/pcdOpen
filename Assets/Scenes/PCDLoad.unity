@@ -423,6 +423,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   targetRenderer: {fileID: 488953045}
   renderFeature: {fileID: -5045952451600284947, guid: 2f2b2fc2984c263439a016844bf95b0b, type: 2}
+  entry: {fileID: 0}
+  streaming: {fileID: 0}
   showUI: 0
   toggleKey: 282
   windowTitle: PcdGpuRenderer Settings

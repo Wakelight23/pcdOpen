@@ -33,14 +33,17 @@ Material:
     m_Floats:
     - _DepthMatchEps: 0.5
     - _DistMode: 1
-    - _EdlStrength: 0.7542902
+    - _EdlStrength: 1.5899054
     - _FarDist: 13.583817
-    - _Gaussian: 0
-    - _KernelSharpness: 0.6718297
+    - _Gaussian: 1
+    - _GaussianHardK: 0.05
+    - _GaussianSigma: 0.5
+    - _KernelShape: 2
+    - _KernelSharpness: 0.5
     - _MaxDepth: 8
     - _NearDist: 7.264795
     - _NodeLevel: 0
-    - _PointSize: 8
+    - _PointSize: 8.391168
     - _UseDistanceColor: 1
     m_Colors:
     - _FarColor: {r: 0.60211027, g: 0.62087816, b: 1, a: 1}

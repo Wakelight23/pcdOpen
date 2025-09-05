@@ -8,10 +8,13 @@ StructuredBuffer<uint> _Colors;
 int _HasColor;
 
 float _PointSize;
-float _KernelSharpness;
-float _Gaussian;
 float4x4 _LocalToWorld;
 float _NodeFade;
+float _Gaussian; // 0=none,1=gaussian
+float _KernelSharpness; // 1..10 (or more)
+float _KernelShape; // 0=circle,1=square,2=gaussian
+float _GaussianSigma; // in pixels mapped to r-space
+float _GaussianHardK; // hard threshold 0..1 (e.g., 0.01~0.1)
 
 // distance-color params (필요 시)
 float _UseDistanceColor;
@@ -41,6 +44,47 @@ inline float3 UnpackRGBA8(uint c)
 {
     const float s = 1.0 / 255.0;
     return float3((c & 0xFF) * s, ((c >> 8) & 0xFF) * s, ((c >> 16) & 0xFF) * s);
+}
+
+inline void ComputeKernelHard(float2 uvCorner, out float hardMask, out float softWeight)
+{
+    float2 p01 = uvCorner * 0.5 + 0.5;
+    float2 d = p01 - 0.5;
+    float r2 = dot(d, d) * 4.0;
+
+    // softWeight: 가장자리 소프트닝(조명/색 보정용)
+    if (_Gaussian > 0.5)
+    {
+        float sigma2 = max(1e-3, 0.25 / max(_KernelSharpness, 1e-3));
+        softWeight = exp(-r2 / sigma2);
+    }
+    else
+    {
+        float dlin = saturate(1.0 - sqrt(r2));
+        softWeight = pow(dlin, max(_KernelSharpness, 1.0));
+    }
+
+    // hardMask: 불투명 유지용 하드 컷아웃
+    if (_KernelShape < 0.5)
+    {
+        // circle
+        hardMask = (r2 <= 1.0) ? 1.0 : 0.0;
+    }
+    else if (_KernelShape < 1.5)
+    {
+        // square
+        float ax = abs(uvCorner.x);
+        float ay = abs(uvCorner.y);
+        hardMask = (ax <= 1.0 && ay <= 1.0) ? 1.0 : 0.0;
+    }
+    else
+    {
+        // gaussian footprint as hard cut with threshold τ
+        float sigmaPx2 = max(1e-4, _GaussianSigma * _GaussianSigma);
+        float g = exp(-r2 / (2.0 * sigmaPx2)); // 0..1
+        float tau = saturate(_GaussianHardK); // e.g., 0.05
+        hardMask = (g >= tau) ? 1.0 : 0.0;
+    }
 }
 
 inline v2f Vert(appdata v)
