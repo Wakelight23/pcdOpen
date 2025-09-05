@@ -1,0 +1,23 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 42f7b33c541b02f4e927cf6858d946f8, type: 3}
+  m_Name: PcdEDLSettings
+  m_EditorClassIdentifier: 
+  edlRadius: 4.1322713
+  edlStrength: 4
+  brightnessBoost: 1.4902208
+  highQuality: 0
+  depthFormat: 14
+  depthMatchEps: 0.12269962
+  frontOnlyInAccum: 1
+  frontOnlyInColorLite: 1
+  colorFormat: 2
