@@ -8,7 +8,8 @@ public static class PcdLoader
 {
     public static bool UseStreamingForCompressed = true;
 
-    class Header
+    // Header/SoaLayout을 public으로 노출
+    public class Header
     {
         public string VERSION;
         public string[] FIELDS;
@@ -22,6 +23,53 @@ public static class PcdLoader
         public int FieldCount => FIELDS?.Length ?? 0;
     }
 
+    public struct SoaLayout
+    {
+        public int fields;
+        public int points;
+        public int[] fieldByteSize; // size*count (per field)
+        public int[] blockStart;    // SOA 내에서 각 필드 블록의 시작 바이트
+        public int totalBytes;      // 전체 SOA 바이트 수
+    }
+
+    // 외부에서 헤더/오프셋만 얻는 API
+    public static Header ReadHeaderOnly(string path, out long dataOffset)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var sr = new StreamReader(fs, Encoding.ASCII, detectEncodingFromByteOrderMarks: false, bufferSize: 128 * 1024, leaveOpen: true);
+        return ParseHeaderStreaming(sr, out dataOffset);
+    }
+
+    // FileStream이 이미 열려있는 경우 헤더만 파싱하는 API
+    public static Header ReadHeaderOnly(FileStream fs, out long dataOffset)
+    {
+        using var sr = new StreamReader(fs, Encoding.ASCII, detectEncodingFromByteOrderMarks: false, bufferSize: 128 * 1024, leaveOpen: true);
+        return ParseHeaderStreaming(sr, out dataOffset);
+    }
+
+    // SOA 레이아웃 공개 유틸
+    public static SoaLayout BuildSoaLayout(Header h, int points)
+    {
+        int fields = h.FieldCount;
+        var L = new SoaLayout
+        {
+            fields = fields,
+            points = points,
+            fieldByteSize = new int[fields],
+            blockStart = new int[fields],
+        };
+        int off = 0;
+        for (int f = 0; f < fields; f++)
+        {
+            L.fieldByteSize[f] = h.SIZE[f] * h.COUNT[f];
+            L.blockStart[f] = off;
+            off += L.fieldByteSize[f] * points;
+        }
+        L.totalBytes = off;
+        return L;
+    }
+
+    // 전체 파일을 읽어 PcdData 생성
     public static PcdData LoadFromFile(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -74,7 +122,7 @@ public static class PcdLoader
                     {
                         Debug.LogWarning($"[PCD] Binary body shorter than expected. remain={remain}, needed={needed}, stride={stride}, points={points}. " +
                                          "Header may be inaccurate (COUNT/SIZE/POINTS) or extra whitespace was miscounted.");
-                        // 1) 자동 보정 시도: 가능한 포인트 수 재산정
+                        // 자동 보정 시도
                         int possiblePoints = (int)(remain / stride);
                         if (possiblePoints > 0 && possiblePoints < points)
                         {
@@ -95,7 +143,6 @@ public static class PcdLoader
                     break;
                 }
 
-
             case "binary_compressed":
                 if (UseStreamingForCompressed)
                     ParseBinaryCompressed_Streamed(fs, header, ix, iy, iz, iRgb, iRgba, iIntensity, data, 1 << 20);
@@ -111,22 +158,42 @@ public static class PcdLoader
         return data;
     }
 
+    // 부분 읽기 지원을 위한 헬퍼: 바이너리 레코드 크기/오프셋 계산 공개
+    public static int ComputeBinaryStride(Header h)
+    {
+        int stride = 0;
+        for (int i = 0; i < h.FieldCount; i++) stride += h.SIZE[i] * h.COUNT[i];
+        return stride;
+    }
+
+    public static int[] ComputeBinaryFieldOffsets(Header h)
+    {
+        int[] offsets = new int[h.FieldCount];
+        int stride = 0;
+        for (int i = 0; i < h.FieldCount; i++)
+        {
+            offsets[i] = stride;
+            stride += h.SIZE[i] * h.COUNT[i];
+        }
+        return offsets;
+    }
+
+    #region Inner Parser
+
     static Header ParseHeaderStreaming(StreamReader sr, out long dataOffset)
     {
         var h = new Header();
         var fs = sr.BaseStream;
         var enc = Encoding.ASCII;
 
-        // 스트림을 바이트 단위로 직접 스캔하여 "DATA " 줄 끝의 다음 바이트 위치를 찾는 방법이 가장 확실
-        // 1) 현재 위치부터 파일 전체를 메모리에 올리지 않고, 작은 버퍼로 스캔
         fs.Position = 0;
         using var br = new BinaryReader(fs, enc, leaveOpen: true);
 
-        // 텍스트 헤더를 ASCII로 읽어가며 라인 단위로 파싱
         using var ms = new MemoryStream();
         void ParseOneLine(byte[] buf, int len)
         {
             var line = enc.GetString(buf, 0, len).Trim();
+            if (line.Length == 0) return;
             if (line.StartsWith("#")) return;
 
             if (line.StartsWith("VERSION"))
@@ -156,27 +223,23 @@ public static class PcdLoader
         bool seenData = false;
         long afterDataLinePos = 0;
 
-        // 라인 바이 라인(바이트단) 스캔
         while ((b = br.Read()) != -1)
         {
             if (b == '\n' || b == '\r')
             {
-                // 라인 종료: 파싱
                 var buf = ms.ToArray();
                 ParseOneLine(buf, buf.Length);
                 ms.SetLength(0);
 
-                // CRLF 처리: \r에 이어 \n이 오면 소비
                 if (b == '\r')
                 {
                     long peek = fs.Position;
                     int n2 = br.PeekChar();
-                    if (n2 == '\n') { br.Read(); } // 소비
+                    if (n2 == '\n') { br.Read(); }
                 }
 
                 if (!string.IsNullOrEmpty(h.DATA) && !seenData)
                 {
-                    // DATA 라인 직후 위치가 본문 시작
                     afterDataLinePos = fs.Position;
                     seenData = true;
                     break;
@@ -200,7 +263,6 @@ public static class PcdLoader
         dataOffset = afterDataLinePos;
         return h;
     }
-
 
     static string[] SplitTokens(string s)
         => s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
@@ -284,7 +346,6 @@ public static class PcdLoader
                                   int ix, int iy, int iz, int iRgb, int iRgba, int iIntensity,
                                   PcdData outData, bool littleEndian = true)
     {
-
         int fieldCount = h.FieldCount;
 
         int[] offsets = new int[fieldCount];
@@ -308,7 +369,6 @@ public static class PcdLoader
                 throw new EndOfStreamException("Reached EOF before reading any bytes for point record.");
             if (read < stride)
             {
-                // 부분 레코드: 남은 포인트를 버리고 종료(경고) 또는 예외
                 throw new EndOfStreamException($"Unexpected EOF in binary body. read={read}, stride={stride}, at point={p}/{n}.");
             }
 
@@ -357,8 +417,9 @@ public static class PcdLoader
         var tmp = new byte[4]; Buffer.BlockCopy(buf, off, tmp, 0, 4); Array.Reverse(tmp);
         return BitConverter.ToUInt32(tmp, 0);
     }
+    #endregion
 
-    // ===== LZF 스트리밍 디코더 =====
+    #region LZF Streaming Decoder and Compressed Parser
     class LzfStreamDecoder
     {
         readonly Stream src;
@@ -394,7 +455,6 @@ public static class PcdLoader
                 {
                     int len = ctrl + 1;
 
-                    // 입력에서 len 바이트를 dst로 복사
                     int remainIn = (int)Math.Min(len, srcEnd - ip);
                     if (remainIn <= 0) break;
 
@@ -442,37 +502,6 @@ public static class PcdLoader
         }
 
         public bool Finished => ip >= srcEnd;
-    }
-
-    struct SoaLayout
-    {
-        public int fields;
-        public int points;
-        public int[] fieldByteSize;
-        public int[] blockStart;
-        public int totalBytes;
-    }
-
-    static SoaLayout BuildSoaLayout(Header h, int points)
-    {
-        int fields = h.FieldCount;
-        var L = new SoaLayout
-        {
-            fields = fields,
-            points = points,
-            fieldByteSize = new int[fields],
-            blockStart = new int[fields],
-        };
-
-        int off = 0;
-        for (int f = 0; f < fields; f++)
-        {
-            L.fieldByteSize[f] = h.SIZE[f] * h.COUNT[f];
-            L.blockStart[f] = off;
-            off += L.fieldByteSize[f] * points;
-        }
-        L.totalBytes = off;
-        return L;
     }
 
     static unsafe void ConsumeSoaSliceIntoArrays(
@@ -625,15 +654,12 @@ public static class PcdLoader
             }
         }
 
-        // 압축 스트림이 패딩으로 끝나더라도 SOA 총량만 일치하면 OK
         if (soaPos != L.totalBytes)
             throw new Exception($"SOA decode incomplete: {soaPos} / {L.totalBytes}");
 
-        // 압축 본문 끝으로 이동(남은 바이트는 무시)
         fs.Position = compEnd;
     }
 
-    // 레거시 경로(필요 시): 파일 전체를 압축 해제 버퍼로 만들었다가 해석
     static void ParseBinaryCompressed_NoAOS_Legacy(FileStream fs, Header h,
                                                    int ix, int iy, int iz, int iRgb, int iRgba, int iIntensity,
                                                    PcdData outData)
@@ -653,7 +679,6 @@ public static class PcdLoader
         int decoded = LzfDecode(comp, comp.Length, soa, (int)uncompressedSize);
         if (decoded != uncompressedSize) throw new Exception("LZF decode size mismatch");
 
-        // 이후는 기존 NoAOS 로직과 동일하게 SOA를 최종 배열에 씀
         int points = outData.pointCount;
         var L = BuildSoaLayout(h, points);
 
@@ -696,7 +721,6 @@ public static class PcdLoader
         }
     }
 
-    // 간단한 LZF 디코더(전체 버퍼 버전) - 레거시 경로용
     static int LzfDecode(byte[] src, int srcLen, byte[] dst, int dstLen)
     {
         int ip = 0;
@@ -766,4 +790,5 @@ public static class PcdLoader
         data.boundsMin = minV;
         data.boundsMax = maxV;
     }
+    #endregion
 }
